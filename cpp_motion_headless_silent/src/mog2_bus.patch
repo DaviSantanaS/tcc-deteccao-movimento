@@ -1,0 +1,51 @@
+--- a/main.cpp
++++ b/main.cpp
+@@ -6,6 +6,8 @@
+ #include <vector>
+ #include <iostream> // apenas para erros
+ 
++#include "MotionBus.hpp"
++
+ std::atomic<bool> running{true};
+ void handle_sig(int){ running = false; }
+ 
+@@ -53,6 +55,8 @@
+     cv::cuda::GpuMat d_bgr, d_mask;
+     cv::cuda::Stream stream;
+ 
++    MotionBus bus("/tmp/motion_bus");
++
+     bool in_motion = false;
+     int consec_motion = 0, consec_idle = 0;
+     uint64_t frame_idx = 0;
+@@ -84,12 +88,16 @@
+             if (nz > threshold) {
+                 if (++consec_motion >= start_frames) {
+                     in_motion = true;
+-                    consec_motion = 0;
++                    consec_motion = 0;
++                    bus.on();
+                 }
+             } else {
+                 consec_motion = 0;
+             }
+         } else { // em movimento
+             if (nz <= threshold) {
+                 if (++consec_idle >= end_frames) {
+                     in_motion = false;
+-                    consec_idle = 0;
++                    consec_idle = 0;
++                    bus.off();
+                 }
+             } else {
+                 consec_idle = 0;
+             }
+         }
+ 
+         ++frame_idx;
+     }
++
++    if (in_motion) bus.off();
++
+     return 0;
+ }

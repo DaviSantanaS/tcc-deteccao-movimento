@@ -1,0 +1,61 @@
+# Builds CMake
+**/build/
+**/build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/Makefile
+
+# Dependências e repositórios externos
+/opencv/
+/opencv_contrib/
+/Video_Codec_SDK_12.2.72/
+/Video_Codec_SDK_12.2.72.zip
+
+# Vídeos e gravações geradas
+/video/
+/recordings/
+/clips/
+*.mp4
+*.mkv
+*.avi
+*.ts
+
+# Binários e pacotes baixados
+/mediamtx
+/mediamtx.tar.gz
+/cuda-keyring_*.deb
+
+# Certificados e chaves locais
+/auto.key
+/auto.crt
+
+# Logs, FIFOs e arquivos temporários
+*.log
+*.tmp
+*.pid
+*.bak
+*.bak2
+.DS_Store
+
+# Arquivos compilados
+*.o
+*.so
+*.a
+*.out
+
+# Editores
+.vscode/
+.idea/
+
+# Arquivos de transferência e backups do projeto
+/tcc-estrutura-codigo.zip
+/tcc-arquivos-auxiliares.zip
+
+# Binários compilados dos protótipos
+/cpp_nvdec_test/nvdec_probe
+/tools/rtsp_remux_min/rtsp_remux_min
+
+# Configurações locais do MediaMTX
+/mediamtx.yml
+/mediamtx.yml.original
