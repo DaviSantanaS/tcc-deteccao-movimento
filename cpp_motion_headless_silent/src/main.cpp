@@ -11,6 +11,7 @@
 #include <vector>
 #include <iostream> // apenas para erros
 #include "MotionBus.hpp"
+#include "motion/Mog2Detector.hpp"
 
 std::atomic<bool> running{true};
 void handle_sig(int){ running = false; }
@@ -52,15 +53,22 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // Subtrator de fundo (GPU)
-    auto mog2 = cv::cuda::createBackgroundSubtractorMOG2(500, 16.0, false);
-    mog2->setDetectShadows(false);
+    if (!reader->set(cv::cudacodec::ColorFormat::BGRA)) {
+        std::cerr << "[fatal] NVDEC nao suporta saida BGRA.\n";
+        return 2;
+    }
 
-    // Morfologia (abertura) na GPU - kernel 3x3
-    cv::Mat k3 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3,3));
-    auto morphOpen = cv::cuda::createMorphologyFilter(cv::MORPH_OPEN, CV_8UC1, k3);
+    motion::Mog2Config detectorConfig;
+    detectorConfig.history = 500;
+    detectorConfig.varianceThreshold = 16.0;
+    detectorConfig.detectShadows = false;
+    detectorConfig.learningRate = mog_lr;
+    detectorConfig.maskThreshold = 200.0;
+    detectorConfig.morphologyKernelSize = 3;
 
-    cv::cuda::GpuMat d_bgr, d_mask;
+    motion::Mog2Detector detector(detectorConfig);
+
+    cv::cuda::GpuMat d_bgr;
     cv::cuda::Stream stream;
 
     bool in_motion = false;
@@ -80,17 +88,13 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        // Todo o processamento na GPU:
-        mog2->apply(d_bgr, d_mask, mog_lr, stream);                    // MOG2
-        cv::cuda::threshold(d_mask, d_mask, 200, 255, cv::THRESH_BINARY, stream); // binariza
-        morphOpen->apply(d_mask, d_mask, stream);                      // abertura
-        stream.waitForCompletion();
+        const motion::DetectionResult result = detector.process(d_bgr, stream);
 
-        // conta non-zero (executa na GPU, retorna um inteiro no host)
-        // OBS: isso NÃO baixa o frame; só retorna um contador. Mantido para manter a lógica.
-        int64_t nz = cv::cuda::countNonZero(d_mask);
+        if (!result.valid) {
+            continue;
+        }
 
-        // lógica de debounce sem prints
+        const int64_t nz = result.activePixels;
         if (!in_motion) {
             if (nz > threshold) {
                 if (++consec_motion >= start_frames) {
