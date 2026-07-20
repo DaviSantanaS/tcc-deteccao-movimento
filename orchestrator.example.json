@@ -1,0 +1,14 @@
+{
+  "lock_file": "/tmp/tcc-motion-orchestrator.lock",
+  "logs_dir": "./logs/orchestrator",
+  "stream_url": "rtsp://127.0.0.1:8554/video",
+  "fifo": {"path": "/tmp/motion_bus", "poll_interval_seconds": 0.1, "ready_timeout_seconds": 2},
+  "mediamtx": {"argv": ["./mediamtx", "./mediamtx.yml"], "cwd": ".", "required_paths": ["./mediamtx.yml"], "health": {"host": "127.0.0.1", "port": 8554, "timeout_seconds": 10, "interval_seconds": 0.1}},
+  "publisher": {"argv": ["/usr/bin/ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-stream_loop", "-1", "-i", "./video/video_hevc_fhd_25fps.mp4", "-an", "-c:v", "copy", "-fflags", "+genpts", "-rtsp_transport", "tcp", "-f", "rtsp", "rtsp://127.0.0.1:8554/video"], "cwd": ".", "required_paths": ["./video/video_hevc_fhd_25fps.mp4"], "health": {"timeout_seconds": 30, "interval_seconds": 0.25}},
+  "ffprobe": {"executable": "/usr/bin/ffprobe", "attempt_timeout_seconds": 3},
+  "detectors": {
+    "mog2": {"argv": ["./cpp_motion_headless_silent/build-local/motion_headless_silent", "rtsp://127.0.0.1:8554/video", "25", "9000", "2", "8"], "cwd": "."},
+    "diff": {"argv": ["./cpp_motion_headless_diff/build-local/motion_headless_diff", "rtsp://127.0.0.1:8554/video", "25", "9000", "2", "8", "30", "5", "0"], "cwd": "."}
+  },
+  "shutdown": {"sigint_timeout_seconds": 5, "sigterm_timeout_seconds": 3, "sigkill_timeout_seconds": 1, "thread_timeout_seconds": 2}
+}

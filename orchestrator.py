@@ -1,286 +1,722 @@
 #!/usr/bin/env python3
+"""Supervisiona o pipeline MediaMTX, publicador e detector."""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import fcntl
+import json
 import os
-import time
-import signal
-import subprocess
 import pathlib
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import sys
 import threading
+import time
+from dataclasses import dataclass
+from types import FrameType
+from typing import Any, BinaryIO, Callable, TextIO
 
-# ========= CONFIG (MVP) =========
-HOME      = str(pathlib.Path.home())
-MEDIAMTX  = "/usr/local/bin/mediamtx"
-MTXCFG    = f"{HOME}/mediamtx/mediamtx.yml"
 
-RTSP_URL  = "rtsp://127.0.0.1:8554/video"
-VIDEO     = f"{HOME}/tcc/video/video_hevc_fhd_25fps.mp4"
+class Error(RuntimeError):
+    """Erro de configuração, inicialização ou supervisão."""
 
-RING_DIR  = "/dev/shm/ring"
-CLIPS_DIR = f"{HOME}/tcc/clips"
-FIFO      = "/tmp/motion_bus"
 
-PRE_SEC   = 5
-POST_SEC  = 5
-SEG_TIME  = 1
-SEG_NAME_FMT = "%Y%m%d-%H%M%S"   # nomes do ring: 20260122-235316.ts
+def path(base: pathlib.Path, value: str) -> pathlib.Path:
+    candidate = pathlib.Path(value).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (base / candidate).resolve()
 
-COOLDOWN_SEC = 10
 
-ENABLE_DETECTOR = False
-DETECTOR_BIN    = f"{HOME}/tcc/cpp_motion_headless_silent/build/motion_headless_silent"
-# args: <url> [fps] [threshold] [start_frames] [end_frames]
-DETECTOR_ARGS   = [RTSP_URL, "30", "9000", "2", "8"]
-# ================================
+@dataclass
+class Spec:
+    name: str
+    argv: list[str]
+    cwd: pathlib.Path
+    required: list[pathlib.Path]
+    env: dict[str, str]
 
-# Verbosidade mínima:
-# - Só imprime spawn/encerramento/collector.
-# - Saída do ffmpeg/mediamtx só aparece em caso de erro (e ainda assim filtrada).
-PRINT_PROC_ERRORS_ONLY = True
-PRINT_PROC_STDOUT_FOR = set(["detector"])  # ex.: {"detector"} se quiser ver algo dele
-SHOW_FULL_CMD_ON_SPAWN = False             # True se quiser ver o comando completo no spawn
+    @classmethod
+    def load(
+        cls,
+        name: str,
+        data: dict[str, Any],
+        base: pathlib.Path,
+    ) -> Spec:
+        argv = data.get("argv")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or not all(isinstance(item, str) and item for item in argv)
+        ):
+            raise Error(f"{name}.argv inválido")
 
-procs = []  # [(name, Popen), ...]
-
-def ensure_dirs():
-    pathlib.Path(RING_DIR).mkdir(parents=True, exist_ok=True)
-    pathlib.Path(CLIPS_DIR).mkdir(parents=True, exist_ok=True)
-    pathlib.Path(f"{HOME}/mediamtx").mkdir(parents=True, exist_ok=True)
-
-    if not pathlib.Path(MTXCFG).exists():
-        pathlib.Path(MTXCFG).write_text(
-            "rtsp: yes\n"
-            "rtspAddress: :8554\n\n"
-            "paths:\n"
-            "  video: {}\n"
+        cwd = path(base, data.get("cwd", "."))
+        return cls(
+            name=name,
+            argv=argv,
+            cwd=cwd,
+            required=[
+                path(cwd, item) for item in data.get("required_paths", [])
+            ],
+            env=data.get("environment", {}),
         )
 
-    # garante FIFO
-    if os.path.exists(FIFO) and not stat_is_fifo(FIFO):
-        os.remove(FIFO)
-    if not os.path.exists(FIFO):
-        os.mkfifo(FIFO)
 
-def stat_is_fifo(path: str) -> bool:
-    try:
-        st = os.stat(path)
-        return (st.st_mode & 0o170000) == 0o010000  # S_IFIFO
-    except Exception:
-        return False
+class Lock:
+    def __init__(self, lock_path: pathlib.Path) -> None:
+        self.path = lock_path
+        self.file: TextIO | None = None
 
-def is_ffmpeg_cmd(cmd):
-    return len(cmd) > 0 and cmd[0] == "ffmpeg"
-
-def with_quiet_ffmpeg(cmd):
-    # minimiza o spam do ffmpeg, deixando só erros
-    if is_ffmpeg_cmd(cmd):
-        # evita duplicar se já tiver
-        if "-hide_banner" not in cmd:
-            cmd = cmd[:1] + ["-hide_banner"] + cmd[1:]
-        # se tiver loglevel, não mexe; senão, seta error
-        if "-loglevel" not in cmd:
-            cmd = cmd[:1] + ["-loglevel", "error"] + cmd[1:]
-    return cmd
-
-def spawn(cmd, name):
-    cmd = with_quiet_ffmpeg(cmd)
-
-    if SHOW_FULL_CMD_ON_SPAWN:
-        print(f"[spawn] {name}: {' '.join(cmd)}", flush=True)
-    else:
-        print(f"[spawn] {name}", flush=True)
-
-    p = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
-    procs.append((name, p))
-
-    def reader():
+    def __enter__(self) -> Lock:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        candidate = self.path.open("a+", encoding="utf-8")
         try:
-            for line in p.stdout:
-                line = line.rstrip()
-                if not line:
-                    continue
+            fcntl.flock(
+                candidate,
+                fcntl.LOCK_EX | fcntl.LOCK_NB,
+            )
+        except BlockingIOError as exc:
+            candidate.close()
+            raise Error(f"outra instância mantém {self.path}") from exc
 
-                # Se quiser ver stdout completo de algum processo específico
-                if name in PRINT_PROC_STDOUT_FOR:
-                    print(f"[{name}] {line}", flush=True)
-                    continue
+        candidate.seek(0)
+        candidate.truncate()
+        candidate.write(f"{os.getpid()}\n")
+        candidate.flush()
+        self.file = candidate
+        return self
 
-                # Por padrão, só mostra erros (mínimo)
-                if PRINT_PROC_ERRORS_ONLY:
-                    low = line.lower()
-                    # heurística simples: mostra linhas que parecem erro/aviso sério
-                    if ("error" in low) or ("fatal" in low) or ("invalid" in low) or ("failed" in low):
-                        print(f"[{name}] {line}", flush=True)
-                else:
-                    print(f"[{name}] {line}", flush=True)
+    def __exit__(
+        self,
+        _exc_type: object,
+        _exc_value: object,
+        _traceback: object,
+    ) -> None:
+        if self.file is not None:
+            fcntl.flock(self.file, fcntl.LOCK_UN)
+            self.file.close()
+            self.file = None
 
-        except Exception:
-            pass
 
-    threading.Thread(target=reader, daemon=True).start()
-    return p
+class FIFO:
+    def __init__(
+        self,
+        fifo_path: pathlib.Path,
+        stop: threading.Event,
+        output_path: pathlib.Path,
+        interval: float = 0.1,
+    ) -> None:
+        self.path = fifo_path
+        self.stop = stop
+        self.output_path = output_path
+        self.interval = interval
+        self.ready = threading.Event()
+        self.error: BaseException | None = None
+        self.fd: int | None = None
+        self.thread = threading.Thread(
+            target=self.run,
+            name="motion-fifo-reader",
+        )
 
-def ffmpeg_concat(paths, outmp4):
-    with open("/tmp/files.txt", "w") as f:
-        for p in paths:
-            f.write(f"file '{p}'\n")
-
-    # concat também com log mínimo
-    return subprocess.call([
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-y",
-        "-f", "concat", "-safe", "0",
-        "-i", "/tmp/files.txt",
-        "-c", "copy",
-        "-movflags", "+faststart",
-        outmp4
-    ])
-
-def existing_segments(t0, t1):
-    # converte epoch(seg) -> nome do arquivo no padrão do ring (%Y%m%d-%H%M%S.ts)
-    segs = []
-    for s in range(int(t0), int(t1) + 1):
-        name = time.strftime(SEG_NAME_FMT, time.localtime(s))
-        p = f"{RING_DIR}/{name}.ts"
-        if os.path.exists(p):
-            segs.append(p)
-    return segs
-
-def collector_loop():
-    on_ms = None
-    last_clip_end_s = 0
-
-    while True:
+    def prepare(self) -> None:
         try:
-            # abre FIFO em RDWR|NONBLOCK para nunca travar o writer
-            fd = os.open(FIFO, os.O_RDWR | os.O_NONBLOCK)
-            with os.fdopen(fd, "r") as f:
-                while True:
-                    line = f.readline()
-                    if not line:
-                        time.sleep(0.1)
-                        continue
+            mode = self.path.stat().st_mode
+        except FileNotFoundError:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.mkfifo(self.path)
+            except FileExistsError:
+                pass
+            mode = self.path.stat().st_mode
 
-                    parts = line.strip().split()
-                    if len(parts) < 2:
-                        continue
+        if not stat.S_ISFIFO(mode):
+            raise Error(f"não é FIFO: {self.path}")
 
-                    ev, ts_str = parts[0], parts[1]
+    def start(self, timeout: float) -> None:
+        self.prepare()
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.thread.start()
+        if not self.ready.wait(timeout) or self.error:
+            raise Error(
+                f"leitor FIFO não ficou pronto: {self.error}"
+            )
+
+    def run(self) -> None:
+        buffer = b""
+        try:
+            self.fd = os.open(
+                self.path,
+                os.O_RDWR | os.O_NONBLOCK,
+            )
+            with self.output_path.open(
+                "a",
+                encoding="utf-8",
+                buffering=1,
+            ) as output:
+                self.ready.set()
+                while not self.stop.is_set():
                     try:
-                        ts = int(ts_str)  # epoch_ms
-                    except Exception:
+                        chunk = os.read(self.fd, 4096)
+                    except BlockingIOError:
+                        self.stop.wait(self.interval)
+                        continue
+                    except OSError as exc:
+                        if exc.errno in (
+                            errno.EAGAIN,
+                            errno.EWOULDBLOCK,
+                        ):
+                            self.stop.wait(self.interval)
+                            continue
+                        raise
+
+                    if not chunk:
+                        self.stop.wait(self.interval)
                         continue
 
-                    if ev == "MOTION_ON":
-                        on_ms = ts
-                        print(f"[collector] ON @ {ts}", flush=True)
+                    buffer += chunk
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        output.write(
+                            line.decode(errors="replace") + "\n"
+                        )
 
-                    elif ev == "MOTION_OFF" and on_ms is not None:
-                        print(f"[collector] OFF @ {ts}", flush=True)
+                if buffer:
+                    output.write(
+                        buffer.decode(errors="replace") + "\n"
+                    )
+        except BaseException as exc:
+            self.error = exc
+            self.ready.set()
+        finally:
+            if self.fd is not None:
+                os.close(self.fd)
+                self.fd = None
 
-                        on_s  = on_ms // 1000
-                        off_s = ts    // 1000
-                        t0 = max(0, on_s - PRE_SEC)
-                        t1 = off_s + POST_SEC
+    def join(self, timeout: float) -> None:
+        if self.thread.ident is None:
+            return
 
-                        # cooldown: evita clipes duplicados muito próximos
-                        if t0 <= last_clip_end_s + COOLDOWN_SEC:
-                            print("[collector] cooldown ativo, ignorando evento", flush=True)
-                            on_ms = None
-                            continue
+        self.thread.join(timeout)
+        if self.thread.is_alive():
+            raise Error("thread FIFO não finalizou")
+        if self.error:
+            raise Error(
+                f"thread FIFO falhou: {self.error}"
+            )
 
-                        # espera pós-roll existir
-                        while int(time.time()) < t1 + 1:
-                            time.sleep(0.25)
 
-                        segs = existing_segments(t0, t1)
-                        if not segs:
-                            print("[collector] nenhum segmento encontrado", flush=True)
-                            on_ms = None
-                            continue
+@dataclass
+class Child:
+    spec: Spec
+    proc: subprocess.Popen[bytes]
+    stdout: BinaryIO
+    stderr: BinaryIO
 
-                        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(t0))
-                        out = f"{CLIPS_DIR}/clip_{stamp}_{t0}-{t1}.mp4"
+    @property
+    def rc(self) -> int | None:
+        return self.proc.poll()
 
-                        rc = ffmpeg_concat(segs, out)
-                        print(f"[collector] {'OK' if rc==0 else 'ERRO'} -> {out} ({len(segs)} segs)", flush=True)
-                        on_ms = None
-                        if rc == 0:
-                            last_clip_end_s = t1
+    def close(self) -> None:
+        self.stdout.close()
+        self.stderr.close()
 
-        except Exception as e:
-            print(f"[collector][ex] {e}", flush=True)
-            time.sleep(0.5)
 
-def main():
-    ensure_dirs()
+class Supervisor:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        base: pathlib.Path,
+        detector: str,
+    ) -> None:
+        self.config = config
+        self.base = base
+        self.stop = threading.Event()
+        self.children: list[Child] = []
+        self.closing = False
 
-    spawn([MEDIAMTX, MTXCFG], "mediamtx")
-    time.sleep(0.5)
-
-    spawn([
-        "ffmpeg", "-re", "-stream_loop", "-1",
-        "-i", VIDEO,
-        "-an",
-        "-c:v", "copy",
-        "-fflags", "+genpts",
-        "-rtsp_transport", "tcp",
-        "-f", "rtsp",
-        RTSP_URL
-    ], "publisher")
-
-    # espera RTSP ficar disponível antes de iniciar o ring (evita ring morrer na largada)
-    for _ in range(60):  # ~30s (60 * 0.5s)
-        rc = subprocess.call(
-            ["ffprobe", "-rtsp_transport", "tcp", "-v", "error", RTSP_URL],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+        self.logs = path(
+            base,
+            config.get("logs_dir", "logs/orchestrator"),
         )
-        if rc == 0:
-            break
-        time.sleep(0.5)
+        fifo_config = config.get("fifo", {})
+        self.fifo = FIFO(
+            path(
+                base,
+                fifo_config.get("path", "/tmp/motion_bus"),
+            ),
+            self.stop,
+            self.logs / "motion_bus.log",
+            float(
+                fifo_config.get(
+                    "poll_interval_seconds",
+                    0.1,
+                )
+            ),
+        )
 
-    seg_time = str(SEG_TIME)
-    spawn([
-        "ffmpeg",
-        "-rtsp_transport", "tcp",
-        "-i", RTSP_URL,
-        "-an",
-        "-c:v", "copy",
-        "-bsf:v", "hevc_mp4toannexb",
-        "-f", "segment",
-        "-segment_format", "mpegts",
-        "-segment_time", seg_time,
-        "-reset_timestamps", "1",
-        "-strftime", "1",
-        f"{RING_DIR}/{SEG_NAME_FMT}.ts"
-    ], "ring")
+        detectors = config.get("detectors", {})
+        if detector not in detectors:
+            raise Error(f"detector desconhecido: {detector}")
 
-    threading.Thread(target=collector_loop, daemon=True).start()
+        self.specs = [
+            Spec.load(
+                "mediamtx",
+                config["mediamtx"],
+                base,
+            ),
+            Spec.load(
+                "publisher",
+                config["publisher"],
+                base,
+            ),
+            Spec.load(
+                "detector",
+                detectors[detector],
+                base,
+            ),
+        ]
 
-    if ENABLE_DETECTOR:
-        spawn([DETECTOR_BIN] + DETECTOR_ARGS, "detector")
+    def preflight(self) -> None:
+        self.logs.mkdir(parents=True, exist_ok=True)
+        for spec in self.specs:
+            if not spec.cwd.is_dir():
+                raise Error(f"cwd inexistente: {spec.cwd}")
+
+            if "/" in spec.argv[0]:
+                executable = path(spec.cwd, spec.argv[0])
+            else:
+                executable = shutil.which(spec.argv[0])
+
+            if not executable or not os.access(
+                executable,
+                os.X_OK,
+            ):
+                raise Error(
+                    f"executável inválido: {spec.argv[0]}"
+                )
+
+            for required_path in spec.required:
+                if not required_path.exists():
+                    raise Error(
+                        "caminho obrigatório inexistente: "
+                        f"{required_path}"
+                    )
+
+        probe = self.config.get("ffprobe", {}).get(
+            "executable",
+            "ffprobe",
+        )
+        if not shutil.which(probe) and not os.access(
+            probe,
+            os.X_OK,
+        ):
+            raise Error(f"ffprobe inválido: {probe}")
+
+        self.fifo.prepare()
+
+    def spawn(self, spec: Spec) -> Child:
+        stdout = (
+            self.logs / f"{spec.name}.stdout.log"
+        ).open("ab", buffering=0)
+        stderr = (
+            self.logs / f"{spec.name}.stderr.log"
+        ).open("ab", buffering=0)
+        environment = os.environ.copy()
+        environment.update(spec.env)
+
+        try:
+            process = subprocess.Popen(
+                spec.argv,
+                cwd=spec.cwd,
+                env=environment,
+                stdout=stdout,
+                stderr=stderr,
+                shell=False,
+                start_new_session=True,
+            )
+        except BaseException:
+            stdout.close()
+            stderr.close()
+            raise
+
+        child = Child(
+            spec,
+            process,
+            stdout,
+            stderr,
+        )
+        self.children.append(child)
+        return child
+
+    def alive(self, child: Child) -> None:
+        if child.rc is not None:
+            raise Error(
+                f"{child.spec.name} encerrou "
+                f"inesperadamente (rc={child.rc})"
+            )
+
+    def port(self, child: Child) -> None:
+        health = self.config["mediamtx"]["health"]
+        deadline = (
+            time.monotonic()
+            + health["timeout_seconds"]
+        )
+        while (
+            time.monotonic() < deadline
+            and not self.stop.is_set()
+        ):
+            self.alive(child)
+            try:
+                with socket.create_connection(
+                    (health["host"], health["port"]),
+                    timeout=health.get(
+                        "interval_seconds",
+                        0.1,
+                    ),
+                ):
+                    return
+            except OSError:
+                self.stop.wait(
+                    health.get(
+                        "interval_seconds",
+                        0.1,
+                    )
+                )
+
+        raise Error("porta RTSP não ficou pronta")
+
+    def probe(self, timeout: float) -> bool:
+        probe_config = self.config.get("ffprobe", {})
+        command = [
+            probe_config.get("executable", "ffprobe"),
+            "-rtsp_transport",
+            "tcp",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            self.config["stream_url"],
+        ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            start_new_session=True,
+        )
+        try:
+            stdout, _stderr = process.communicate(
+                timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                try:
+                    os.killpg(
+                        process.pid,
+                        signal.SIGKILL,
+                    )
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            return False
+
+        return (
+            process.returncode == 0
+            and b"video" in stdout.splitlines()
+        )
+
+    def stream(self, child: Child) -> None:
+        health = self.config["publisher"]["health"]
+        probe_config = self.config.get("ffprobe", {})
+        deadline = (
+            time.monotonic()
+            + health["timeout_seconds"]
+        )
+
+        while (
+            time.monotonic() < deadline
+            and not self.stop.is_set()
+        ):
+            self.alive(child)
+            attempt_timeout = min(
+                probe_config.get(
+                    "attempt_timeout_seconds",
+                    3,
+                ),
+                max(
+                    0.01,
+                    deadline - time.monotonic(),
+                ),
+            )
+            if self.probe(attempt_timeout):
+                return
+            self.stop.wait(
+                health.get(
+                    "interval_seconds",
+                    0.25,
+                )
+            )
+
+        raise Error("stream RTSP não ficou pronto")
+
+    def detector_ready(self, child: Child) -> None:
+        deadline = (
+            time.monotonic()
+            + self.config.get(
+                "detector_startup_grace_seconds",
+                1,
+            )
+        )
+        while (
+            time.monotonic() < deadline
+            and not self.stop.is_set()
+        ):
+            self.alive(child)
+            self.stop.wait(
+                min(
+                    0.1,
+                    max(
+                        0,
+                        deadline - time.monotonic(),
+                    ),
+                )
+            )
+        self.alive(child)
+
+    def start(self) -> None:
+        self.preflight()
+        self.fifo.start(
+            self.config.get("fifo", {}).get(
+                "ready_timeout_seconds",
+                2,
+            )
+        )
+
+        media = self.spawn(self.specs[0])
+        self.port(media)
+
+        publisher = self.spawn(self.specs[1])
+        self.stream(publisher)
+
+        detector = self.spawn(self.specs[2])
+        self.detector_ready(detector)
+
+    def monitor(self) -> None:
+        interval = self.config.get(
+            "monitor_interval_seconds",
+            0.2,
+        )
+        while not self.stop.wait(interval):
+            for child in self.children:
+                self.alive(child)
+
+            if (
+                self.fifo.error
+                or not self.fifo.thread.is_alive()
+            ):
+                raise Error("leitor FIFO encerrou")
+
+    def shutdown(self) -> None:
+        if self.closing:
+            return
+
+        self.closing = True
+        self.stop.set()
+        pending = list(reversed(self.children))
+        shutdown_config = self.config.get(
+            "shutdown",
+            {},
+        )
+        stages = (
+            (
+                signal.SIGINT,
+                "sigint_timeout_seconds",
+                5,
+            ),
+            (
+                signal.SIGTERM,
+                "sigterm_timeout_seconds",
+                3,
+            ),
+            (
+                signal.SIGKILL,
+                "sigkill_timeout_seconds",
+                1,
+            ),
+        )
+
+        for current_signal, key, default in stages:
+            for child in pending:
+                if child.rc is not None:
+                    continue
+                try:
+                    os.killpg(
+                        child.proc.pid,
+                        current_signal,
+                    )
+                except ProcessLookupError:
+                    pass
+
+            deadline = (
+                time.monotonic()
+                + shutdown_config.get(key, default)
+            )
+            while pending and time.monotonic() < deadline:
+                time.sleep(0.02)
+                pending = [
+                    child
+                    for child in pending
+                    if child.rc is None
+                ]
+
+            if not pending:
+                break
+
+        try:
+            self.fifo.join(
+                shutdown_config.get(
+                    "thread_timeout_seconds",
+                    2,
+                )
+            )
+        finally:
+            for child in self.children:
+                child.close()
+
+        if pending:
+            raise Error("processos não encerraram")
+
+
+def load_config(
+    config_path: pathlib.Path,
+) -> tuple[dict[str, Any], pathlib.Path]:
+    try:
+        with config_path.open(encoding="utf-8") as source:
+            config = json.load(source)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Error(
+            f"configuração inválida: {exc}"
+        ) from exc
+
+    for key in (
+        "stream_url",
+        "mediamtx",
+        "publisher",
+        "detectors",
+    ):
+        if key not in config:
+            raise Error(f"campo ausente: {key}")
+
+    return config, config_path.resolve().parent
+
+
+def install_signal_handlers(
+    stop: threading.Event,
+) -> dict[signal.Signals, Any]:
+    previous: dict[signal.Signals, Any] = {}
+
+    def request_stop(
+        signum: int,
+        _frame: FrameType | None,
+    ) -> None:
+        print(
+            f"[orchestrator] "
+            f"{signal.Signals(signum).name}",
+            flush=True,
+        )
+        stop.set()
+
+    for current_signal in (
+        signal.SIGINT,
+        signal.SIGTERM,
+    ):
+        previous[current_signal] = signal.signal(
+            current_signal,
+            request_stop,
+        )
+
+    return previous
+
+
+def restore_signal_handlers(
+    previous: dict[signal.Signals, Any],
+) -> None:
+    for current_signal, handler in previous.items():
+        signal.signal(current_signal, handler)
+
+
+def parse_args(
+    argv: list[str] | None = None,
+) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=pathlib.Path,
+        default=pathlib.Path(
+            "orchestrator.example.json"
+        ),
+    )
+    parser.add_argument(
+        "--detector",
+        choices=("mog2", "diff"),
+        required=True,
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    previous_handlers: dict[signal.Signals, Any] = {}
 
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("[orchestrator] encerrando...", flush=True)
-        for name, p in procs:
+        config, base = load_config(args.config)
+        lock_path = path(
+            base,
+            config.get(
+                "lock_file",
+                "/tmp/tcc-motion-orchestrator.lock",
+            ),
+        )
+        with Lock(lock_path):
+            supervisor = Supervisor(
+                config,
+                base,
+                args.detector,
+            )
+            previous_handlers = install_signal_handlers(
+                supervisor.stop
+            )
             try:
-                p.send_signal(signal.SIGINT)
-            except Exception:
-                pass
-        for name, p in procs:
-            try:
-                p.wait(timeout=3)
-            except Exception:
-                pass
-        print("[orchestrator] bye.", flush=True)
+                supervisor.start()
+                supervisor.monitor()
+            finally:
+                supervisor.shutdown()
+        return 0
+    except (
+        Error,
+        OSError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        print(
+            f"[orchestrator][erro] {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        restore_signal_handlers(previous_handlers)
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
