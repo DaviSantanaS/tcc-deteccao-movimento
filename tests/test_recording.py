@@ -172,6 +172,25 @@ class StateMachineTests(unittest.TestCase):
         self.controller.motion_on(1_000_000)
         self.assertEqual(self.controller.state, RecordingState.MOTION_ACTIVE)
         self.assertIn(self.segment_path, self.controller.event.preserved)
+        self.assertEqual(self.controller.event.first_sequence, 1)
+
+    def test_motion_on_without_pre_event_is_propagated(self) -> None:
+        self.catalog.segments = []
+        with self.assertRaisesRegex(RecordingError, "pré-evento"):
+            self.controller.motion_on(1_000_000)
+        self.assertEqual(self.controller.state, RecordingState.IDLE)
+        self.assertIsNone(self.controller.event)
+
+    def test_controller_thread_records_pre_event_failure(self) -> None:
+        self.catalog.segments = []
+        self.controller.start()
+        self.controller.enqueue("MOTION_ON 1000000")
+        deadline = time.monotonic() + 1
+        while self.controller.error is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIsInstance(self.controller.error, RecordingError)
+        with self.assertRaisesRegex(RecordingError, "controlador de gravação falhou"):
+            self.controller.shutdown()
 
     def test_motion_active_to_post_event(self) -> None:
         self.controller.motion_on(1_000_000)
@@ -234,6 +253,7 @@ class SegmentCatalogTests(unittest.TestCase):
             config = recording_config(root)
             catalog = SegmentCatalog(config)
             catalog.prepare()
+            catalog.begin_session(0)
             old = config.segments_dir / "segment_000000000001.ts"
             recent = config.segments_dir / "segment_000000000002.ts"
             old.write_bytes(b"old")
@@ -255,6 +275,82 @@ class SegmentCatalogTests(unittest.TestCase):
                 [item.sequence for item in catalog.scan()],
                 [1, 2, 3],
             )
+
+    def test_pre_event_does_not_cross_session_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config = recording_config(root)
+            catalog = SegmentCatalog(config)
+            catalog.prepare()
+            old = config.segments_dir / "segment_000000000001.ts"
+            current = config.segments_dir / "segment_000000000002.ts"
+            old.write_bytes(b"old")
+            current.write_bytes(b"current")
+            os.utime(old, (999, 999))
+            os.utime(current, (999, 999))
+            catalog.begin_session(2)
+            self.assertEqual(
+                [segment.sequence for segment in catalog.select_pre_event(1_000_000)],
+                [2],
+            )
+
+    def test_restart_uses_new_sequence_without_deleting_old_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config = recording_config(root)
+            catalog = SegmentCatalog(config)
+            catalog.prepare()
+            old = config.segments_dir / "segment_000000000007.ts"
+            old.write_bytes(b"old")
+            start_number = catalog.next_sequence()
+            catalog.begin_session(start_number)
+            self.assertEqual(start_number, 8)
+            self.assertEqual(catalog.current_session(), [])
+            self.assertTrue(old.exists())
+
+    def test_select_event_uses_sequence_anchor_within_current_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config = recording_config(root)
+            catalog = SegmentCatalog(config)
+            catalog.prepare()
+            for sequence in (4, 5, 6, 7):
+                (config.segments_dir / f"segment_{sequence:012d}.ts").write_bytes(b"x")
+            catalog.begin_session(5)
+            event = Event("event", 1_000_000, first_sequence=6)
+            self.assertEqual(
+                [segment.sequence for segment in catalog.select_event(event)],
+                [6, 7],
+            )
+
+    def test_byte_limit_accounts_for_expired_segments_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            clock = Clock()
+            config = recording_config(
+                root,
+                pre_event_seconds=1,
+                idle_retention_seconds=5,
+                max_ring_bytes=10,
+            )
+            catalog = SegmentCatalog(config, clock)
+            catalog.prepare()
+            first = config.segments_dir / "segment_000000000001.ts"
+            first.write_bytes(b"123456")
+            catalog.scan()
+            clock.advance(6)
+            second = config.segments_dir / "segment_000000000002.ts"
+            third = config.segments_dir / "segment_000000000003.ts"
+            active = config.segments_dir / "segment_000000000004.ts"
+            for segment in (second, third, active):
+                segment.write_bytes(b"123456")
+            catalog.segmenter_alive = lambda: True
+            catalog.scan()
+            catalog.retain(set(), lambda _message: None)
+            self.assertFalse(first.exists())
+            self.assertFalse(second.exists())
+            self.assertTrue(third.exists())
+            self.assertTrue(active.exists())
 
     def test_removes_old_idle_segments(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -319,10 +415,12 @@ class FinalizationTests(unittest.TestCase):
             "_run_command",
             return_value=(1, b"", b"remux error"),
         ):
-            self.assertFalse(self.controller.finalize())
+            with self.assertRaisesRegex(RecordingError, "remux falhou"):
+                self.controller.finalize()
         metadata = list((self.root / "recordings").rglob("*.json"))
         self.assertEqual(len(metadata), 1)
         self.assertEqual(json.loads(metadata[0].read_text())["status"], "failed")
+        self.assertEqual(self.controller.state, RecordingState.FINALIZING)
 
     def test_invalid_ffprobe_records_failure(self) -> None:
         def run(command: list[str]) -> tuple[int, bytes, bytes]:
@@ -332,9 +430,19 @@ class FinalizationTests(unittest.TestCase):
             return 1, b"", b"invalid"
 
         with mock.patch.object(self.controller, "_run_command", side_effect=run):
-            self.assertFalse(self.controller.finalize())
+            with self.assertRaisesRegex(RecordingError, "ffprobe"):
+                self.controller.finalize()
         metadata = list((self.root / "recordings").rglob("*.json"))
         self.assertEqual(json.loads(metadata[0].read_text())["status"], "failed")
+        self.assertEqual(self.controller.state, RecordingState.FINALIZING)
+
+    def test_missing_segments_records_and_propagates_failure(self) -> None:
+        self.controller.catalog.segments = []
+        with self.assertRaisesRegex(RecordingError, "nenhum segmento"):
+            self.controller.finalize()
+        metadata = next((self.root / "recordings").rglob("*.json"))
+        self.assertEqual(json.loads(metadata.read_text())["status"], "failed")
+        self.assertEqual(self.controller.state, RecordingState.FINALIZING)
 
     def test_successful_finalization_records_codec_and_duration(self) -> None:
         def run(command: list[str]) -> tuple[int, bytes, bytes]:
@@ -386,6 +494,58 @@ class SupervisionTests(unittest.TestCase):
             child.spec.name = "segmenter"
             with self.assertRaisesRegex(orchestrator.Error, "segmenter"):
                 supervisor.alive(child)
+
+    def test_old_segments_do_not_make_new_segmenter_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            process = {"argv": ["/bin/true"], "cwd": str(root)}
+            config = {
+                "stream_url": "rtsp://example/video",
+                "ffprobe": {"executable": "/bin/true"},
+                "mediamtx": dict(process),
+                "publisher": dict(process),
+                "detectors": {"diff": dict(process)},
+                "recording": {
+                    "enabled": True,
+                    "segments_dir": str(root / "segments"),
+                    "recordings_dir": str(root / "recordings"),
+                    "pre_event_seconds": 0.01,
+                    "idle_retention_seconds": 1,
+                    "segmenter_ready_timeout_seconds": 0.01,
+                },
+            }
+            supervisor = orchestrator.Supervisor(config, root, "diff")
+            assert supervisor.catalog is not None
+            supervisor.catalog.prepare()
+            old = supervisor.catalog.config.segments_dir / "segment_000000000003.ts"
+            old.write_bytes(b"old")
+            supervisor.catalog.begin_session(4)
+            child = mock.Mock()
+            child.rc = None
+            with mock.patch.object(supervisor, "_probe_segment") as probe:
+                with self.assertRaisesRegex(orchestrator.Error, "não ficou pronto"):
+                    supervisor.segmenter_ready(child)
+            probe.assert_not_called()
+
+    def test_supervisor_detects_recording_controller_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            process = {"argv": ["/bin/true"], "cwd": str(root)}
+            config = {
+                "stream_url": "rtsp://example/video",
+                "ffprobe": {"executable": "/bin/true"},
+                "mediamtx": dict(process),
+                "publisher": dict(process),
+                "detectors": {"diff": dict(process)},
+            }
+            supervisor = orchestrator.Supervisor(config, root, "diff")
+            supervisor.recording = mock.Mock()
+            supervisor.recording.error = RecordingError("remux falhou")
+            supervisor.fifo.thread = mock.Mock()
+            supervisor.fifo.thread.is_alive.return_value = True
+            supervisor.stop.wait = mock.Mock(return_value=False)
+            with self.assertRaisesRegex(orchestrator.Error, "remux falhou"):
+                supervisor.monitor()
 
 
 if __name__ == "__main__":

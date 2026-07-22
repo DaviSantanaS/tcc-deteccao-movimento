@@ -398,7 +398,7 @@ class Supervisor:
         durations: dict[pathlib.Path, float] = {}
         while time.monotonic() < deadline and not self.stop.is_set():
             self.alive(child)
-            for segment in self.catalog.scan():
+            for segment in self.catalog.current_session():
                 if segment.path in durations:
                     continue
                 duration = self._probe_segment(
@@ -604,13 +604,15 @@ class Supervisor:
 
         if self.recording_config.enabled:
             assert self.catalog is not None
+            start_number = self.catalog.next_sequence()
+            self.catalog.begin_session(start_number)
             segmenter_spec = Spec(
                 name="segmenter",
                 argv=build_segmenter_command(
                     self.recording_config,
                     self.config["publisher"]["argv"][0],
                     self.config["stream_url"],
-                    self.catalog.next_sequence(),
+                    start_number,
                 ),
                 cwd=self.base,
                 required=[],

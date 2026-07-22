@@ -133,6 +133,7 @@ class Event:
     post_end_ms: int | None = None
     preserved: set[pathlib.Path] | None = None
     finalized_by_shutdown: bool = False
+    first_sequence: int | None = None
 
     def __post_init__(self) -> None:
         if self.preserved is None:
@@ -151,6 +152,7 @@ class SegmentCatalog:
         self.monotonic = monotonic
         self.finalized_seen: dict[pathlib.Path, float] = {}
         self.segmenter_alive: Callable[[], bool] = lambda: False
+        self.session_first_sequence: int | None = None
 
     def prepare(self) -> None:
         self.config.segments_dir.mkdir(parents=True, exist_ok=True)
@@ -165,6 +167,20 @@ class SegmentCatalog:
         if not segments:
             return 0
         return segments[-1].sequence + 1
+
+    def begin_session(self, first_sequence: int) -> None:
+        if first_sequence < 0:
+            raise RecordingError("sequência inicial da sessão deve ser não negativa")
+        self.session_first_sequence = first_sequence
+
+    def current_session(self, include_active: bool = False) -> list[Segment]:
+        if self.session_first_sequence is None:
+            raise RecordingError("sessão do segmentador não foi registrada")
+        return [
+            segment
+            for segment in self.scan(include_active=include_active)
+            if segment.sequence >= self.session_first_sequence
+        ]
 
     def scan(self, include_active: bool = False) -> list[Segment]:
         segments: list[Segment] = []
@@ -194,18 +210,20 @@ class SegmentCatalog:
             - self.config.pre_event_seconds
             - self.config.segment_duration_seconds
         )
-        return [segment for segment in self.scan() if segment.mtime >= cutoff]
+        return [
+            segment
+            for segment in self.current_session()
+            if segment.mtime >= cutoff
+        ]
 
     def select_event(self, event: Event) -> list[Segment]:
-        segments = self.scan()
-        if not event.preserved:
-            return []
-        first_sequence = min(
-            segment.sequence
-            for segment in segments
-            if segment.path in event.preserved
-        )
-        return [segment for segment in segments if segment.sequence >= first_sequence]
+        if event.first_sequence is None:
+            raise RecordingError("evento sem âncora de sequência")
+        return [
+            segment
+            for segment in self.current_session()
+            if segment.sequence >= event.first_sequence
+        ]
 
     def retain(
         self,
@@ -224,6 +242,7 @@ class SegmentCatalog:
 
         if self.config.max_ring_bytes is not None:
             total = sum(segment.size for segment in segments)
+            total -= sum(segment.size for segment in removable)
             for segment in segments:
                 if total <= self.config.max_ring_bytes:
                     break
@@ -311,7 +330,12 @@ class RecordingController:
     def motion_on(self, timestamp_ms: int) -> None:
         if self.state is RecordingState.IDLE:
             selected = self.catalog.select_pre_event(timestamp_ms)
+            if not selected:
+                raise RecordingError(
+                    "nenhum segmento da sessão atual disponível para o pré-evento"
+                )
             self.event = Event(uuid.uuid4().hex, timestamp_ms)
+            self.event.first_sequence = selected[0].sequence
             self.event.preserved.update(item.path for item in selected)
             self.log(f"segmentos pré-evento preservados: {len(selected)}")
             self.transition(RecordingState.MOTION_ACTIVE, "MOTION_ON")
@@ -430,11 +454,10 @@ class RecordingController:
         self.update_preserved()
         segments = self.catalog.select_event(event)
         if not segments:
-            self.log("finalização falhou: nenhum segmento")
-            self._record_failure(event, [], "nenhum segmento")
-            self.state = RecordingState.IDLE
-            self.event = None
-            return False
+            error = "nenhum segmento disponível para finalização"
+            self.log(f"finalização falhou: {error}")
+            self._record_failure(event, [], error)
+            raise RecordingError(error)
 
         event_time = dt.datetime.fromtimestamp(event.motion_on_ms / 1000.0).astimezone()
         day = self.config.recordings_dir / event_time.strftime("%Y-%m-%d")
@@ -471,7 +494,7 @@ class RecordingController:
             error = stderr.decode(errors="replace")[-2000:]
             self.log(f"remux falhou rc={returncode}: {error}")
             self._record_failure(event, segments, error, clip_path)
-            return False
+            raise RecordingError(f"remux falhou (rc={returncode}): {error}")
 
         probe_command = [
             self.ffprobe,
@@ -497,7 +520,7 @@ class RecordingController:
             error = probe_stderr.decode(errors="replace") or "ffprobe não validou vídeo"
             self.log(f"ffprobe inválido: {error}")
             self._record_failure(event, segments, error, clip_path)
-            return False
+            raise RecordingError(f"ffprobe não validou o clipe: {error}")
 
         metadata = self._base_metadata(event, segments, clip_path)
         metadata.update({"status": "completed", "codec": codec, "duration": duration})
@@ -553,15 +576,20 @@ class RecordingController:
             self.thread.join(timeout)
             if self.thread.is_alive():
                 raise RecordingError("thread de gravação não finalizou")
-        if self.state in {RecordingState.MOTION_ACTIVE, RecordingState.POST_EVENT}:
-            assert self.event is not None
-            self.transition(RecordingState.FINALIZING, "shutdown")
-            self.finalize(shutdown=True)
-        if self._log_file is not None:
-            self._log_file.close()
-            self._log_file = None
-        if self.error is not None:
-            raise RecordingError(f"controlador de gravação falhou: {self.error}")
+        try:
+            if self.error is not None:
+                raise RecordingError(f"controlador de gravação falhou: {self.error}")
+            if self.state in {
+                RecordingState.MOTION_ACTIVE,
+                RecordingState.POST_EVENT,
+            }:
+                assert self.event is not None
+                self.transition(RecordingState.FINALIZING, "shutdown")
+                self.finalize(shutdown=True)
+        finally:
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
 
 
 def build_segmenter_command(
