@@ -21,6 +21,14 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Any, BinaryIO, Callable, TextIO
 
+from recording import (
+    RecordingConfig,
+    RecordingController,
+    RecordingError,
+    SegmentCatalog,
+    build_segmenter_command,
+)
+
 
 class Error(RuntimeError):
     """Erro de configuração, inicialização ou supervisão."""
@@ -111,11 +119,13 @@ class FIFO:
         stop: threading.Event,
         output_path: pathlib.Path,
         interval: float = 0.1,
+        sink: Callable[[str], None] | None = None,
     ) -> None:
         self.path = fifo_path
         self.stop = stop
         self.output_path = output_path
         self.interval = interval
+        self.sink = sink
         self.ready = threading.Event()
         self.error: BaseException | None = None
         self.fd: int | None = None
@@ -182,9 +192,10 @@ class FIFO:
                     buffer += chunk
                     while b"\n" in buffer:
                         line, buffer = buffer.split(b"\n", 1)
-                        output.write(
-                            line.decode(errors="replace") + "\n"
-                        )
+                        decoded = line.decode(errors="replace")
+                        output.write(decoded + "\n")
+                        if self.sink is not None:
+                            self.sink(decoded)
 
                 if buffer:
                     output.write(
@@ -244,6 +255,23 @@ class Supervisor:
             base,
             config.get("logs_dir", "logs/orchestrator"),
         )
+        self.recording_config = RecordingConfig.load(
+            config.get("recording"),
+            base,
+        )
+        self.catalog: SegmentCatalog | None = None
+        self.recording: RecordingController | None = None
+        if self.recording_config.enabled:
+            self.catalog = SegmentCatalog(self.recording_config)
+            self.recording = RecordingController(
+                self.recording_config,
+                detector,
+                config["publisher"]["argv"][0],
+                config.get("ffprobe", {}).get("executable", "ffprobe"),
+                self.catalog,
+            )
+            self.recording.set_log_path(self.logs / "recording.log")
+
         fifo_config = config.get("fifo", {})
         self.fifo = FIFO(
             path(
@@ -258,6 +286,7 @@ class Supervisor:
                     0.1,
                 )
             ),
+            self.recording.enqueue if self.recording is not None else None,
         )
 
         detectors = config.get("detectors", {})
@@ -319,6 +348,69 @@ class Supervisor:
             raise Error(f"ffprobe inválido: {probe}")
 
         self.fifo.prepare()
+        if self.recording_config.enabled:
+            assert self.catalog is not None
+            self.catalog.prepare()
+
+    def _probe_segment(self, segment: pathlib.Path, timeout: float) -> float | None:
+        probe = self.config.get("ffprobe", {}).get("executable", "ffprobe")
+        process = subprocess.Popen(
+            [
+                probe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_type:format=duration",
+                "-of",
+                "json",
+                str(segment),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            start_new_session=True,
+        )
+        try:
+            stdout, _stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            return None
+        if process.returncode != 0:
+            return None
+        try:
+            data = json.loads(stdout)
+            if not data.get("streams"):
+                return None
+            return float(data["format"]["duration"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def segmenter_ready(self, child: Child) -> None:
+        assert self.catalog is not None
+        deadline = time.monotonic() + self.recording_config.segmenter_ready_timeout_seconds
+        durations: dict[pathlib.Path, float] = {}
+        while time.monotonic() < deadline and not self.stop.is_set():
+            self.alive(child)
+            for segment in self.catalog.scan():
+                if segment.path in durations:
+                    continue
+                duration = self._probe_segment(
+                    segment.path,
+                    min(3.0, max(0.01, deadline - time.monotonic())),
+                )
+                if duration is not None and duration > 0:
+                    durations[segment.path] = duration
+            if sum(durations.values()) >= self.recording_config.pre_event_seconds:
+                return
+            self.stop.wait(0.1)
+        raise Error("segmentador não ficou pronto com cobertura de pré-evento")
 
     def spawn(self, spec: Spec) -> Child:
         stdout = (
@@ -495,6 +587,8 @@ class Supervisor:
 
     def start(self) -> None:
         self.preflight()
+        if self.recording is not None:
+            self.recording.start()
         self.fifo.start(
             self.config.get("fifo", {}).get(
                 "ready_timeout_seconds",
@@ -507,6 +601,24 @@ class Supervisor:
 
         publisher = self.spawn(self.specs[1])
         self.stream(publisher)
+
+        if self.recording_config.enabled:
+            assert self.catalog is not None
+            segmenter_spec = Spec(
+                name="segmenter",
+                argv=build_segmenter_command(
+                    self.recording_config,
+                    self.config["publisher"]["argv"][0],
+                    self.config["stream_url"],
+                    self.catalog.next_sequence(),
+                ),
+                cwd=self.base,
+                required=[],
+                env={},
+            )
+            segmenter = self.spawn(segmenter_spec)
+            self.catalog.segmenter_alive = lambda: segmenter.rc is None
+            self.segmenter_ready(segmenter)
 
         detector = self.spawn(self.specs[2])
         self.detector_ready(detector)
@@ -525,6 +637,8 @@ class Supervisor:
                 or not self.fifo.thread.is_alive()
             ):
                 raise Error("leitor FIFO encerrou")
+            if self.recording is not None and self.recording.error is not None:
+                raise Error(f"controlador de gravação encerrou: {self.recording.error}")
 
     def shutdown(self) -> None:
         if self.closing:
@@ -582,19 +696,23 @@ class Supervisor:
             if not pending:
                 break
 
+        recording_error: BaseException | None = None
         try:
-            self.fifo.join(
-                shutdown_config.get(
-                    "thread_timeout_seconds",
-                    2,
+            if self.recording is not None:
+                self.recording.shutdown(
+                    shutdown_config.get("recording_timeout_seconds", 30)
                 )
-            )
+            self.fifo.join(shutdown_config.get("thread_timeout_seconds", 2))
+        except (RecordingError, OSError) as exc:
+            recording_error = exc
         finally:
             for child in self.children:
                 child.close()
 
         if pending:
             raise Error("processos não encerraram")
+        if recording_error is not None:
+            raise Error(str(recording_error))
 
 
 def load_config(

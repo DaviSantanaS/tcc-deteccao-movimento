@@ -10,5 +10,18 @@
     "mog2": {"argv": ["./cpp_motion_headless_silent/build-local/motion_headless_silent", "rtsp://127.0.0.1:8554/video", "25", "9000", "2", "8"], "cwd": "."},
     "diff": {"argv": ["./cpp_motion_headless_diff/build-local/motion_headless_diff", "rtsp://127.0.0.1:8554/video", "25", "9000", "2", "8", "30", "5", "0"], "cwd": "."}
   },
-  "shutdown": {"sigint_timeout_seconds": 5, "sigterm_timeout_seconds": 3, "sigkill_timeout_seconds": 1, "thread_timeout_seconds": 2}
+  "recording": {
+    "enabled": true,
+    "segments_dir": "./runtime/segments",
+    "recordings_dir": "./recordings",
+    "segment_duration_seconds": 1,
+    "pre_event_seconds": 5,
+    "post_event_seconds": 5,
+    "idle_retention_seconds": 10,
+    "finalization_margin_seconds": 2,
+    "segmenter_ready_timeout_seconds": 30,
+    "command_timeout_seconds": 30,
+    "container": "mkv"
+  },
+  "shutdown": {"sigint_timeout_seconds": 5, "sigterm_timeout_seconds": 3, "sigkill_timeout_seconds": 1, "thread_timeout_seconds": 2, "recording_timeout_seconds": 30}
 }
