@@ -1,9 +1,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/cudacodec.hpp>
-#include <opencv2/cudaarithm.hpp>
-#include <opencv2/cudafilters.hpp>
-#include <opencv2/cudaimgproc.hpp>
 #include "MotionBus.hpp"
+#include "motion/FrameDifferenceDetector.hpp"
 
 #include <csignal>
 #include <atomic>
@@ -47,14 +45,21 @@ int main(int argc, char** argv) {
         std::cerr << "[fatal] Falha ao abrir NVDEC: " << e.what() << "\n"; return 2;
     }
 
-    // Buffers/filtros na GPU
-    cv::cuda::GpuMat d_src, d_gray, d_prevGray, d_diff, d_blur, d_mask;
-    cv::cuda::Stream stream;
+    if (!reader->set(cv::cudacodec::ColorFormat::BGRA)) {
+        std::cerr << "[fatal] NVDEC nao suporta saida BGRA.\n";
+        return 2;
+    }
 
-    int k = std::max(3, ksize | 1);
-    cv::Ptr<cv::cuda::Filter> gauss = cv::cuda::createGaussianFilter(CV_8UC1, CV_8UC1, cv::Size(k, k), sigma);
-    cv::Mat k3 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3,3));
-    cv::Ptr<cv::cuda::Filter> morphOpen = cv::cuda::createMorphologyFilter(cv::MORPH_OPEN, CV_8UC1, k3);
+    motion::FrameDifferenceConfig detectorConfig;
+    detectorConfig.differenceThreshold = diff_thr;
+    detectorConfig.gaussianKernelSize = ksize;
+    detectorConfig.gaussianSigma = sigma;
+    detectorConfig.morphologyKernelSize = 3;
+
+    motion::FrameDifferenceDetector detector(detectorConfig);
+
+    cv::cuda::GpuMat d_src;
+    cv::cuda::Stream stream;
 
     bool in_motion=false; int consecOn=0, consecOff=0;
     uint64_t frame_idx=0;
@@ -63,74 +68,19 @@ int main(int argc, char** argv) {
     while (running) {
         bool ok=false;
         try {
-            ok = reader->nextFrame(d_src, stream); // pode vir BGR (3ch), BGRA (4ch) ou NV12 (1ch empilhado)
+            ok = reader->nextFrame(d_src, stream);
         } catch (const cv::Exception& e) {
             std::cerr << "[fatal] NVDEC nextFrame exception: " << e.what() << "\n"; break;
         }
         if (!ok) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
 
-        const int type  = d_src.type();
-        const int depth = CV_MAT_DEPTH(type);
-        const int chans = CV_MAT_CN(type);
+        const motion::DetectionResult result = detector.process(d_src, stream);
 
-        if (depth != CV_8U) {
-            std::cerr << "[fatal] Formato inesperado (não 8-bit). type="<<type<<" chans="<<chans<<"\n";
-            break;
-        }
-
-        // ---- Converter para GRAY na GPU conforme o formato recebido ----
-        if (chans == 3) {
-            // BGR → GRAY
-            cv::cuda::cvtColor(d_src, d_gray, cv::COLOR_BGR2GRAY, 0, stream);
-        } else if (chans == 4) {
-            // BGRA/RGBA → GRAY (BGRA é o comum)
-            cv::cuda::cvtColor(d_src, d_gray, cv::COLOR_BGRA2GRAY, 0, stream);
-        } else if (chans == 1) {
-            // Provável NV12 (rows = H*3/2, cols = W) → usa plano Y como GRAY
-            int rows = d_src.rows, cols = d_src.cols;
-            if ((rows * 2) % 3 == 0) {
-                int H = (rows * 2) / 3;
-                if (H > 0 && H <= rows) {
-                    cv::cuda::GpuMat y_plane(d_src, cv::Rect(0, 0, cols, H)); // view sem cópia
-                    d_gray = y_plane;
-                } else {
-                    // fallback: tenta conversão NV12->GRAY
-                    cv::cuda::cvtColor(d_src, d_gray, cv::COLOR_YUV2GRAY_NV12, 0, stream);
-                }
-            } else {
-                // 1 canal mas não NV12 clássico: assume que já é GRAY
-                d_gray = d_src;
-            }
-        } else {
-            std::cerr << "[fatal] Canais inesperados: "<<chans<<"\n";
-            break;
-        }
-
-        // Primeira iteração: inicializa "prev"
-        if (d_prevGray.empty()) {
-            d_gray.copyTo(d_prevGray, stream);
-            stream.waitForCompletion();
-            ++frame_idx;
+        if (!result.valid) {
             continue;
         }
 
-        // |curr - prev| (GPU)
-        cv::cuda::absdiff(d_gray, d_prevGray, d_diff, stream);
-
-        // Blur leve (GPU) para ruído/compressão
-        gauss->apply(d_diff, d_blur, stream);
-
-        // Threshold (GPU)
-        cv::cuda::threshold(d_blur, d_mask, diff_thr, 255, cv::THRESH_BINARY, stream);
-
-        // Morfologia (GPU)
-        morphOpen->apply(d_mask, d_mask, stream);
-
-        // Sincroniza antes do contador
-        stream.waitForCompletion();
-
-        // Conta pixels ativos (só o escalar vem ao host)
-        int64_t nz = cv::cuda::countNonZero(d_mask);
+        const int64_t nz = result.activePixels;
 
         // Debounce com emissão somente nas mudanças de estado
         if (!in_motion) {
@@ -155,8 +105,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Atualiza prev
-        d_gray.copyTo(d_prevGray, stream);
         ++frame_idx;
         // opcional: aliviar CPU
         // std::this_thread::sleep_for(std::chrono::milliseconds(1));
