@@ -42,7 +42,8 @@ def recording_config(root: pathlib.Path, **overrides: object) -> RecordingConfig
         "post_event_seconds": 5,
         "idle_retention_seconds": 10,
         "finalization_margin_seconds": 2,
-        "container": "mkv",
+        "container": "mp4",
+        "max_fragment_seconds": 90,
     }
     data.update(overrides)
     return RecordingConfig.load(data, root)
@@ -52,6 +53,9 @@ class FakeCatalog:
     def __init__(self, segments: list[Segment] | None = None) -> None:
         self.segments = segments or []
         self.retained: list[set[pathlib.Path]] = []
+        self.durations: dict[pathlib.Path, float] = {
+            segment.path: 1.0 for segment in self.segments
+        }
 
     def prepare(self) -> None:
         pass
@@ -60,13 +64,89 @@ class FakeCatalog:
         return list(self.segments)
 
     def select_event(self, _event: Event) -> list[Segment]:
-        return list(self.segments)
+        first = _event.part_first_sequence
+        if first is None:
+            first = _event.first_sequence
+        return [
+            segment
+            for segment in self.segments
+            if first is not None and segment.sequence >= first
+        ]
 
     def scan(self, include_active: bool = False) -> list[Segment]:
         return list(self.segments)
 
+    def current_session(self, include_active: bool = False) -> list[Segment]:
+        return list(self.segments)
+
     def retain(self, preserved: set[pathlib.Path], _log: object) -> None:
         self.retained.append(set(preserved))
+
+    def cached_duration(self, segment: Segment) -> float | None:
+        return self.durations.get(segment.path, 1.0)
+
+    def cache_duration(self, segment: Segment, duration: float) -> None:
+        self.durations[segment.path] = duration
+
+
+class ValidationRunner:
+    def __init__(
+        self,
+        codec: str = "hevc",
+        duration_per_segment: float = 1.0,
+        packet_flags: str = "K_",
+        key_frame: int = 1,
+        pict_type: str | None = "I",
+        format_name: str = "mov,mp4,m4a,3gp,3g2,mj2",
+        decode_rc: int = 0,
+        decode_stderr: bytes = b"",
+        stream_count: int = 1,
+    ) -> None:
+        self.codec = codec
+        self.duration_per_segment = duration_per_segment
+        self.packet_flags = packet_flags
+        self.key_frame = key_frame
+        self.pict_type = pict_type
+        self.format_name = format_name
+        self.decode_rc = decode_rc
+        self.decode_stderr = decode_stderr
+        self.stream_count = stream_count
+        self.current_duration = duration_per_segment
+        self.commands: list[list[str]] = []
+        self.final_existed_during_validation = False
+
+    def __call__(self, command: list[str]) -> tuple[int, bytes, bytes]:
+        self.commands.append(command)
+        if command[0] == "ffmpeg" and command[-1] == "-":
+            return self.decode_rc, b"", self.decode_stderr
+        if command[0] == "ffmpeg":
+            concat_input = command[command.index("-i") + 1]
+            count = len(concat_input.removeprefix("concat:").split("|"))
+            self.current_duration = count * self.duration_per_segment
+            temporary = pathlib.Path(command[-1])
+            temporary.write_bytes(b"valid mp4")
+            final = temporary.with_name(temporary.name[1:-5])
+            self.final_existed_during_validation = final.exists()
+            return 0, b"", b""
+        if "-show_packets" in command:
+            payload = {"packets": [{"flags": self.packet_flags}]}
+            return 0, json.dumps(payload).encode(), b""
+        if "-show_frames" in command:
+            frame: dict[str, object] = {"key_frame": self.key_frame}
+            if self.pict_type is not None:
+                frame["pict_type"] = self.pict_type
+            return 0, json.dumps({"frames": [frame]}).encode(), b""
+        payload = {
+            "streams": [
+                {"codec_name": self.codec}
+                for _index in range(self.stream_count)
+            ],
+            "format": {
+                "duration": str(self.current_duration),
+                "format_name": self.format_name,
+            },
+        }
+        return 0, json.dumps(payload).encode(), b""
 
 
 class RecordingConfigurationTests(unittest.TestCase):
@@ -76,7 +156,8 @@ class RecordingConfigurationTests(unittest.TestCase):
             config = recording_config(root)
             self.assertTrue(config.enabled)
             self.assertEqual(config.pre_event_seconds, 5)
-            self.assertEqual(config.container, "mkv")
+            self.assertEqual(config.container, "mp4")
+            self.assertEqual(config.max_fragment_seconds, 90)
 
     def test_invalid_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -93,6 +174,41 @@ class RecordingConfigurationTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             config = RecordingConfig.load({"enabled": False}, root)
             self.assertFalse(config.enabled)
+
+    def test_default_container_and_fragment_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = RecordingConfig.load(
+                {"enabled": False},
+                pathlib.Path(temporary),
+            )
+            self.assertEqual(config.container, "mp4")
+            self.assertEqual(config.max_fragment_seconds, 90)
+
+    def test_mkv_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(RecordingError, "mp4"):
+                recording_config(pathlib.Path(temporary), container="mkv")
+
+    def test_invalid_fragment_durations_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            for value in (0, -1):
+                with self.subTest(value=value):
+                    with self.assertRaises(RecordingError):
+                        recording_config(root, max_fragment_seconds=value)
+            with self.assertRaisesRegex(RecordingError, "pre_event_seconds"):
+                recording_config(
+                    root,
+                    pre_event_seconds=10,
+                    max_fragment_seconds=10,
+                )
+            with self.assertRaisesRegex(RecordingError, "segment_duration_seconds"):
+                recording_config(
+                    root,
+                    pre_event_seconds=1,
+                    segment_duration_seconds=10,
+                    max_fragment_seconds=10,
+                )
 
 
 class FifoForwardingTests(unittest.TestCase):
@@ -163,6 +279,7 @@ class StateMachineTests(unittest.TestCase):
             self.catalog,
             self.clock,
             lambda: 1000.0,
+            "hevc",
         )
 
     def tearDown(self) -> None:
@@ -388,6 +505,161 @@ class SegmentCatalogTests(unittest.TestCase):
             self.assertTrue(active.exists())
 
 
+class FragmentationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temporary.name)
+        self.segments: list[Segment] = []
+        for sequence in range(1, 5):
+            path = self.root / f"segment_{sequence:012d}.ts"
+            path.write_bytes(b"segment")
+            self.segments.append(Segment(sequence, path, 1000.0 + sequence, 7))
+        self.catalog = FakeCatalog(self.segments)
+        self.catalog.durations = {
+            segment.path: 2.0 for segment in self.segments
+        }
+        self.controller = RecordingController(
+            recording_config(
+                self.root,
+                pre_event_seconds=1,
+                max_fragment_seconds=5,
+            ),
+            "diff",
+            "ffmpeg",
+            "ffprobe",
+            self.catalog,
+            input_codec="hevc",
+        )
+        self.runner = ValidationRunner(duration_per_segment=2.0)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def test_long_event_uses_real_duration_and_contiguous_parts(self) -> None:
+        self.controller.motion_on(1_000_000)
+        event_id = self.controller.event.event_id
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=self.runner,
+        ):
+            self.controller.tick()
+            self.assertEqual(self.controller.state, RecordingState.MOTION_ACTIVE)
+            self.assertEqual(self.controller.event.event_id, event_id)
+            self.assertEqual(self.controller.event.part_index, 2)
+            self.controller.motion_off(1_010_000)
+            self.controller.state = RecordingState.FINALIZING
+            self.controller.finalize()
+
+        metadata = sorted((self.root / "recordings").rglob("*.json"))
+        self.assertEqual(len(metadata), 2)
+        parts = [json.loads(path.read_text()) for path in metadata]
+        self.assertEqual([part["part_index"] for part in parts], [1, 2])
+        self.assertEqual({part["event_id"] for part in parts}, {event_id})
+        self.assertEqual(parts[0]["fragment_reason"], "max_duration")
+        self.assertFalse(parts[0]["is_final_part"])
+        self.assertEqual(parts[1]["fragment_reason"], "motion_end")
+        self.assertTrue(parts[1]["is_final_part"])
+        self.assertEqual(parts[0]["first_sequence"], 1)
+        self.assertEqual(parts[0]["last_sequence"], 2)
+        self.assertEqual(parts[1]["first_sequence"], 3)
+        self.assertEqual(parts[1]["last_sequence"], 4)
+        sequences = [
+            sequence
+            for part in parts
+            for sequence in range(
+                part["first_sequence"],
+                part["last_sequence"] + 1,
+            )
+        ]
+        self.assertEqual(sequences, [1, 2, 3, 4])
+        self.assertTrue(all(part["duration"] <= 5 for part in parts))
+
+    def test_fragmentation_works_in_post_event_and_motion_can_return(self) -> None:
+        self.controller.motion_on(1_000_000)
+        event_id = self.controller.event.event_id
+        self.controller.motion_off(1_001_000)
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=self.runner,
+        ):
+            self.controller.tick()
+        self.assertEqual(self.controller.state, RecordingState.POST_EVENT)
+        self.assertEqual(self.controller.event.part_index, 2)
+        self.controller.motion_on(1_002_000)
+        self.assertEqual(self.controller.state, RecordingState.MOTION_ACTIVE)
+        self.assertEqual(self.controller.event.event_id, event_id)
+        self.assertEqual(self.controller.event.part_index, 2)
+        self.assertEqual(self.controller.event.part_first_sequence, 3)
+
+    def test_shutdown_only_finalizes_pending_part(self) -> None:
+        self.controller.motion_on(1_000_000)
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=self.runner,
+        ):
+            self.controller.tick()
+            self.controller.shutdown()
+        metadata = [
+            json.loads(path.read_text())
+            for path in sorted((self.root / "recordings").rglob("*.json"))
+        ]
+        self.assertEqual(len(metadata), 2)
+        self.assertEqual(metadata[0]["last_sequence"], 2)
+        self.assertEqual(metadata[1]["first_sequence"], 3)
+        self.assertEqual(metadata[1]["fragment_reason"], "shutdown")
+        self.assertTrue(metadata[1]["finalized_by_shutdown"])
+
+    def test_single_segment_over_limit_is_explicit_error(self) -> None:
+        self.catalog.segments = self.segments[:1]
+        self.catalog.durations = {self.segments[0].path: 6.0}
+        self.controller.motion_on(1_000_000)
+        with self.assertRaisesRegex(RecordingError, "keyframes"):
+            self.controller.tick()
+
+    def test_sequence_gap_is_rejected_without_publishing_part(self) -> None:
+        self.catalog.segments = [self.segments[0], self.segments[2]]
+        self.controller.motion_on(1_000_000)
+        with self.assertRaisesRegex(RecordingError, "lacuna"):
+            self.controller.finalize()
+        self.assertFalse(list((self.root / "recordings").rglob("*.mp4")))
+
+    def test_intermediate_part_without_keyframe_is_rejected(self) -> None:
+        self.controller.motion_on(1_000_000)
+        runner = ValidationRunner(packet_flags="__")
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=runner,
+        ):
+            with self.assertRaisesRegex(RecordingError, "primeiro pacote"):
+                self.controller.tick()
+        self.assertEqual(self.controller.event.part_index, 1)
+        self.assertFalse(list((self.root / "recordings").rglob("*.mp4")))
+
+    def test_validated_oversize_retries_without_last_segment(self) -> None:
+        self.controller.motion_on(1_000_000)
+        runner = ValidationRunner(duration_per_segment=3.0)
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=runner,
+        ):
+            self.controller.tick()
+        metadata = [
+            json.loads(path.read_text())
+            for path in sorted((self.root / "recordings").rglob("*.json"))
+        ]
+        self.assertEqual(
+            [(part["first_sequence"], part["last_sequence"]) for part in metadata],
+            [(1, 1), (2, 2)],
+        )
+        self.assertTrue(all(part["duration"] == 3.0 for part in metadata))
+        self.assertEqual(self.controller.event.part_first_sequence, 3)
+
+
 class FinalizationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -401,6 +673,7 @@ class FinalizationTests(unittest.TestCase):
             "ffmpeg",
             "ffprobe",
             FakeCatalog([self.segment]),
+            input_codec="hevc",
         )
         self.controller.motion_on(1_000_000)
         self.controller.motion_off(1_002_000)
@@ -421,6 +694,9 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(len(metadata), 1)
         self.assertEqual(json.loads(metadata[0].read_text())["status"], "failed")
         self.assertEqual(self.controller.state, RecordingState.FINALIZING)
+        failed = json.loads(metadata[0].read_text())
+        self.assertTrue(failed["clip_path"].endswith(".mp4"))
+        self.assertFalse(pathlib.Path(failed["clip_path"]).exists())
 
     def test_invalid_ffprobe_records_failure(self) -> None:
         def run(command: list[str]) -> tuple[int, bytes, bytes]:
@@ -435,6 +711,9 @@ class FinalizationTests(unittest.TestCase):
         metadata = list((self.root / "recordings").rglob("*.json"))
         self.assertEqual(json.loads(metadata[0].read_text())["status"], "failed")
         self.assertEqual(self.controller.state, RecordingState.FINALIZING)
+        failed = json.loads(metadata[0].read_text())
+        self.assertFalse(pathlib.Path(failed["clip_path"]).exists())
+        self.assertFalse(list((self.root / "recordings").rglob("*.part")))
 
     def test_missing_segments_records_and_propagates_failure(self) -> None:
         self.controller.catalog.segments = []
@@ -447,11 +726,18 @@ class FinalizationTests(unittest.TestCase):
     def test_successful_finalization_records_codec_and_duration(self) -> None:
         def run(command: list[str]) -> tuple[int, bytes, bytes]:
             if command[0] == "ffmpeg":
+                if command[-1] == "-":
+                    return 0, b"", b""
                 pathlib.Path(command[-1]).write_bytes(b"valid clip")
                 return 0, b"", b""
+            if "-show_packets" in command:
+                return 0, json.dumps({"packets": [{"flags": "K_"}]}).encode(), b""
+            if "-show_frames" in command:
+                frame = {"frames": [{"key_frame": 1, "pict_type": "I"}]}
+                return 0, json.dumps(frame).encode(), b""
             probe = {
                 "streams": [{"codec_name": "hevc"}],
-                "format": {"duration": "12.4"},
+                "format": {"duration": "12.4", "format_name": "mov,mp4"},
             }
             return 0, json.dumps(probe).encode(), b""
 
@@ -462,6 +748,127 @@ class FinalizationTests(unittest.TestCase):
         self.assertEqual(metadata["status"], "completed")
         self.assertEqual(metadata["codec"], "hevc")
         self.assertEqual(metadata["duration"], 12.4)
+        self.assertTrue(metadata["starts_with_keyframe"])
+        self.assertEqual(metadata["container"], "mp4")
+        self.assertTrue(pathlib.Path(metadata["clip_path"]).exists())
+        self.assertTrue(metadata["clip_path"].endswith(".mp4"))
+
+    def test_h264_is_preserved(self) -> None:
+        self.controller.set_input_codec("h264")
+        runner = ValidationRunner(codec="h264")
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=runner,
+        ):
+            self.controller.finalize()
+        metadata = json.loads(
+            next((self.root / "recordings").rglob("*.json")).read_text()
+        )
+        self.assertEqual(metadata["input_codec"], "h264")
+        self.assertEqual(metadata["codec"], "h264")
+
+    def test_final_name_is_not_visible_during_validation(self) -> None:
+        runner = ValidationRunner()
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=runner,
+        ):
+            self.controller.finalize()
+        self.assertFalse(runner.final_existed_during_validation)
+
+    def test_finalizer_uses_only_local_segments(self) -> None:
+        runner = ValidationRunner()
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=runner,
+        ):
+            self.controller.finalize()
+        commands = [
+            command
+            for command in runner.commands
+            if command[0] == "ffmpeg" and command[-1] != "-"
+        ]
+        self.assertEqual(len(commands), 1)
+        self.assertNotIn("rtsp://", " ".join(commands[0]))
+        self.assertIn("copy", commands[0])
+
+    def _assert_validation_error(
+        self,
+        runner: ValidationRunner,
+        message: str,
+    ) -> None:
+        candidate = self.root / "candidate.mp4.part"
+        candidate.write_bytes(b"candidate")
+        with mock.patch.object(
+            self.controller,
+            "_run_command",
+            side_effect=runner,
+        ):
+            with self.assertRaisesRegex(RecordingError, message):
+                self.controller._validate_mp4(candidate)
+
+    def test_first_packet_must_be_keyframe(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(packet_flags="__"),
+            "primeiro pacote",
+        )
+
+    def test_first_frame_must_be_keyframe(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(key_frame=0),
+            "primeiro frame",
+        )
+
+    def test_first_frame_pict_type_must_be_i_when_present(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(pict_type="P"),
+            "pict_type=P",
+        )
+
+    def test_incompatible_format_is_rejected(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(format_name="matroska,webm"),
+            "contêiner",
+        )
+
+    def test_output_codec_must_match_input(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(codec="h264"),
+            "difere do RTSP",
+        )
+
+    def test_unsupported_output_codec_is_rejected(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(codec="vp9"),
+            "codec MP4 não suportado",
+        )
+
+    def test_exactly_one_selected_video_stream_is_required(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(stream_count=2),
+            "exatamente uma stream",
+        )
+
+    def test_zero_duration_is_rejected(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(duration_per_segment=0),
+            "duração",
+        )
+
+    def test_full_decode_failure_is_rejected(self) -> None:
+        self._assert_validation_error(
+            ValidationRunner(decode_rc=1, decode_stderr=b"decode error"),
+            "decodificação integral",
+        )
+
+    def test_empty_file_is_rejected_before_ffprobe(self) -> None:
+        candidate = self.root / "empty.mp4.part"
+        candidate.touch()
+        with self.assertRaisesRegex(RecordingError, "vazio"):
+            self.controller._validate_mp4(candidate)
 
     def test_segmenter_uses_copy_and_mpegts(self) -> None:
         command = build_segmenter_command(
@@ -473,7 +880,13 @@ class FinalizationTests(unittest.TestCase):
         self.assertIn("copy", command)
         self.assertIn("mpegts", command)
         self.assertNotIn("libx265", command)
+        self.assertNotIn("libx264", command)
+        self.assertNotIn("h264_nvenc", command)
         self.assertIn("42", command)
+        index = command.index("-break_non_keyframes")
+        self.assertEqual(command[index + 1], "0")
+        reset_index = command.index("-reset_timestamps")
+        self.assertEqual(command[reset_index + 1], "0")
 
 
 class SupervisionTests(unittest.TestCase):

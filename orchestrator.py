@@ -407,6 +407,7 @@ class Supervisor:
                 )
                 if duration is not None and duration > 0:
                     durations[segment.path] = duration
+                    self.catalog.cache_duration(segment, duration)
             if sum(durations.values()) >= self.recording_config.pre_event_seconds:
                 return
             self.stop.wait(0.1)
@@ -483,7 +484,7 @@ class Supervisor:
 
         raise Error("porta RTSP não ficou pronta")
 
-    def probe(self, timeout: float) -> bool:
+    def probe(self, timeout: float) -> str | None:
         probe_config = self.config.get("ffprobe", {})
         command = [
             probe_config.get("executable", "ffprobe"),
@@ -494,9 +495,9 @@ class Supervisor:
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_type",
+            "stream=codec_name,codec_type",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "json",
             self.config["stream_url"],
         ]
         process = subprocess.Popen(
@@ -520,12 +521,18 @@ class Supervisor:
                 except ProcessLookupError:
                     pass
                 process.wait()
-            return False
-
-        return (
-            process.returncode == 0
-            and b"video" in stdout.splitlines()
-        )
+            return None
+        if process.returncode != 0:
+            return None
+        try:
+            data = json.loads(stdout)
+            streams = data.get("streams", [])
+            if len(streams) != 1 or streams[0].get("codec_type") != "video":
+                return None
+            codec = streams[0].get("codec_name")
+            return codec if isinstance(codec, str) else None
+        except (TypeError, json.JSONDecodeError):
+            return None
 
     def stream(self, child: Child) -> None:
         health = self.config["publisher"]["health"]
@@ -550,7 +557,12 @@ class Supervisor:
                     deadline - time.monotonic(),
                 ),
             )
-            if self.probe(attempt_timeout):
+            codec = self.probe(attempt_timeout)
+            if codec is not None:
+                if codec not in {"h264", "hevc"}:
+                    raise Error(f"codec RTSP não suportado: {codec}")
+                if self.recording is not None:
+                    self.recording.set_input_codec(codec)
                 return
             self.stop.wait(
                 health.get(

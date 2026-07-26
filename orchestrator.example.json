@@ -21,7 +21,8 @@
     "finalization_margin_seconds": 2,
     "segmenter_ready_timeout_seconds": 30,
     "command_timeout_seconds": 30,
-    "container": "mkv"
+    "max_fragment_seconds": 90,
+    "container": "mp4"
   },
   "shutdown": {"sigint_timeout_seconds": 5, "sigterm_timeout_seconds": 3, "sigkill_timeout_seconds": 1, "thread_timeout_seconds": 2, "recording_timeout_seconds": 30}
 }

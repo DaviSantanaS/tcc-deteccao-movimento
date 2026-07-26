@@ -43,6 +43,7 @@ class RecordingConfig:
     segmenter_ready_timeout_seconds: float
     command_timeout_seconds: float
     max_ring_bytes: int | None
+    max_fragment_seconds: float
 
     @classmethod
     def load(
@@ -85,9 +86,21 @@ class RecordingConfig:
                 "recording.idle_retention_seconds deve ser maior ou igual a pre_event_seconds"
             )
 
-        container = data.get("container", "mkv")
-        if container not in {"mkv"}:
-            raise RecordingError("recording.container suportado: mkv")
+        container = data.get("container", "mp4")
+        if container != "mp4":
+            raise RecordingError("recording.container suportado: mp4")
+
+        segment_duration = positive("segment_duration_seconds", 1)
+        max_fragment = positive("max_fragment_seconds", 90)
+        if pre_event >= max_fragment:
+            raise RecordingError(
+                "recording.pre_event_seconds deve ser menor que max_fragment_seconds"
+            )
+        if segment_duration >= max_fragment:
+            raise RecordingError(
+                "recording.segment_duration_seconds deve ser menor que "
+                "max_fragment_seconds"
+            )
 
         max_ring_bytes = data.get("max_ring_bytes")
         if max_ring_bytes is not None:
@@ -100,7 +113,7 @@ class RecordingConfig:
             enabled=enabled,
             segments_dir=resolve(segments_value),
             recordings_dir=resolve(recordings_value),
-            segment_duration_seconds=positive("segment_duration_seconds", 1),
+            segment_duration_seconds=segment_duration,
             pre_event_seconds=pre_event,
             post_event_seconds=positive("post_event_seconds", 5),
             idle_retention_seconds=retention,
@@ -111,6 +124,7 @@ class RecordingConfig:
             ),
             command_timeout_seconds=positive("command_timeout_seconds", 30),
             max_ring_bytes=max_ring_bytes,
+            max_fragment_seconds=max_fragment,
         )
 
 
@@ -134,6 +148,8 @@ class Event:
     preserved: set[pathlib.Path] | None = None
     finalized_by_shutdown: bool = False
     first_sequence: int | None = None
+    part_first_sequence: int | None = None
+    part_index: int = 1
 
     def __post_init__(self) -> None:
         if self.preserved is None:
@@ -153,6 +169,7 @@ class SegmentCatalog:
         self.finalized_seen: dict[pathlib.Path, float] = {}
         self.segmenter_alive: Callable[[], bool] = lambda: False
         self.session_first_sequence: int | None = None
+        self.duration_cache: dict[pathlib.Path, float] = {}
 
     def prepare(self) -> None:
         self.config.segments_dir.mkdir(parents=True, exist_ok=True)
@@ -217,13 +234,26 @@ class SegmentCatalog:
         ]
 
     def select_event(self, event: Event) -> list[Segment]:
-        if event.first_sequence is None:
+        first_sequence = event.part_first_sequence
+        if first_sequence is None:
+            first_sequence = event.first_sequence
+        if first_sequence is None:
             raise RecordingError("evento sem âncora de sequência")
         return [
             segment
             for segment in self.current_session()
-            if segment.sequence >= event.first_sequence
+            if segment.sequence >= first_sequence
         ]
+
+    def cache_duration(self, segment: Segment, duration: float) -> None:
+        if duration <= 0:
+            raise RecordingError(
+                f"duração inválida para segmento {segment.sequence}: {duration}"
+            )
+        self.duration_cache[segment.path] = duration
+
+    def cached_duration(self, segment: Segment) -> float | None:
+        return self.duration_cache.get(segment.path)
 
     def retain(
         self,
@@ -255,6 +285,7 @@ class SegmentCatalog:
             try:
                 segment.path.unlink()
                 self.finalized_seen.pop(segment.path, None)
+                self.duration_cache.pop(segment.path, None)
                 log(f"segmento removido: {segment.path}")
             except FileNotFoundError:
                 pass
@@ -270,6 +301,7 @@ class RecordingController:
         catalog: SegmentCatalog | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
+        input_codec: str | None = None,
     ) -> None:
         self.config = config
         self.detector = detector
@@ -277,6 +309,7 @@ class RecordingController:
         self.ffprobe = ffprobe
         self.monotonic = monotonic
         self.wall_time = wall_time
+        self.input_codec = input_codec
         self.catalog = catalog or SegmentCatalog(config, monotonic)
         self.state = RecordingState.IDLE
         self.event: Event | None = None
@@ -289,6 +322,11 @@ class RecordingController:
 
     def set_log_path(self, log_path: pathlib.Path) -> None:
         self.log_path = log_path
+
+    def set_input_codec(self, codec: str) -> None:
+        if codec not in {"h264", "hevc"}:
+            raise RecordingError(f"codec de entrada não suportado: {codec}")
+        self.input_codec = codec
 
     def start(self) -> None:
         self.catalog.prepare()
@@ -336,6 +374,7 @@ class RecordingController:
                 )
             self.event = Event(uuid.uuid4().hex, timestamp_ms)
             self.event.first_sequence = selected[0].sequence
+            self.event.part_first_sequence = selected[0].sequence
             self.event.preserved.update(item.path for item in selected)
             self.log(f"segmentos pré-evento preservados: {len(selected)}")
             self.transition(RecordingState.MOTION_ACTIVE, "MOTION_ON")
@@ -383,6 +422,7 @@ class RecordingController:
     def tick(self) -> None:
         if self.state is not RecordingState.IDLE:
             self.update_preserved()
+            self.finalize_due_parts()
         preserved = self.event.preserved if self.event is not None else set()
         self.catalog.retain(preserved, self.log)
 
@@ -392,7 +432,7 @@ class RecordingController:
         assert deadline is not None
         if self.monotonic() < deadline + self.config.finalization_margin_seconds:
             return
-        finalized = self.catalog.scan()
+        finalized = self.catalog.current_session()
         if not finalized or self.event.post_end_ms is None:
             return
         if finalized[-1].mtime < self.event.post_end_ms / 1000.0:
@@ -445,6 +485,68 @@ class RecordingController:
         )
         temporary.replace(target)
 
+    def _segment_duration(self, segment: Segment) -> float:
+        cached = self.catalog.cached_duration(segment)
+        if cached is not None:
+            return cached
+        command = [
+            self.ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_type:format=duration",
+            "-of",
+            "json",
+            str(segment.path),
+        ]
+        returncode, stdout, stderr = self._run_command(command)
+        try:
+            data = json.loads(stdout) if returncode == 0 else {}
+            streams = data.get("streams", [])
+            duration = float(data.get("format", {}).get("duration", 0))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            streams = []
+            duration = 0.0
+        if not streams or duration <= 0:
+            detail = stderr.decode(errors="replace")[-2000:]
+            raise RecordingError(
+                f"não foi possível medir o segmento {segment.sequence}: {detail}"
+            )
+        self.catalog.cache_duration(segment, duration)
+        return duration
+
+    def _prefix_within_limit(self, segments: list[Segment]) -> list[Segment]:
+        selected: list[Segment] = []
+        total = 0.0
+        for segment in segments:
+            duration = self._segment_duration(segment)
+            if total + duration > self.config.max_fragment_seconds:
+                break
+            selected.append(segment)
+            total += duration
+        return selected
+
+    def finalize_due_parts(self) -> None:
+        if self.event is None or self.state is RecordingState.FINALIZING:
+            return
+        while True:
+            segments = self.catalog.select_event(self.event)
+            if not segments:
+                return
+            durations = [self._segment_duration(segment) for segment in segments]
+            if sum(durations) <= self.config.max_fragment_seconds:
+                return
+            prefix = self._prefix_within_limit(segments)
+            if not prefix:
+                raise RecordingError(
+                    "um único segmento excede max_fragment_seconds; "
+                    "o espaçamento de keyframes é incompatível com gravação "
+                    "sem reencode"
+                )
+            self.finalize_part(prefix, "max_duration", is_final=False)
+
     def finalize(self, shutdown: bool = False) -> bool:
         if self.event is None:
             self.state = RecordingState.IDLE
@@ -452,100 +554,289 @@ class RecordingController:
         event = self.event
         event.finalized_by_shutdown = shutdown
         self.update_preserved()
-        segments = self.catalog.select_event(event)
-        if not segments:
-            error = "nenhum segmento disponível para finalização"
-            self.log(f"finalização falhou: {error}")
-            self._record_failure(event, [], error)
-            raise RecordingError(error)
+        reason = "shutdown" if shutdown else "motion_end"
+        while True:
+            segments = self.catalog.select_event(event)
+            if not segments:
+                error = "nenhum segmento disponível para finalização"
+                self.log(f"finalização falhou: {error}")
+                self._record_failure(event, [], error, reason)
+                raise RecordingError(error)
+            prefix = self._prefix_within_limit(segments)
+            if not prefix:
+                error = (
+                    "um único segmento excede max_fragment_seconds; "
+                    "o espaçamento de keyframes é incompatível"
+                )
+                self._record_failure(event, segments[:1], error, reason)
+                raise RecordingError(error)
+            is_final = len(prefix) == len(segments)
+            consumed = self.finalize_part(
+                prefix,
+                reason if is_final else "max_duration",
+                is_final=is_final,
+            )
+            if is_final and consumed == len(prefix):
+                break
+        self.state = RecordingState.IDLE
+        self.event = None
+        return True
 
+    def _event_paths(
+        self,
+        event: Event,
+        part_index: int,
+    ) -> tuple[pathlib.Path, pathlib.Path]:
         event_time = dt.datetime.fromtimestamp(event.motion_on_ms / 1000.0).astimezone()
         day = self.config.recordings_dir / event_time.strftime("%Y-%m-%d")
         day.mkdir(parents=True, exist_ok=True)
         stamp = event_time.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        clip_path = day / f"event_{stamp}_{event.event_id[:8]}.{self.config.container}"
-        list_path = day / f".{event.event_id}.segments.txt"
-        list_path.write_text(
-            "".join(f"file '{segment.path.resolve()}'\n" for segment in segments),
-            encoding="utf-8",
-        )
-        command = [
-            self.ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(list_path),
-            "-map",
-            "0:v:0",
-            "-c:v",
-            "copy",
-            "-y",
-            str(clip_path),
-        ]
-        self.log("início da finalização: " + " ".join(command))
-        returncode, _stdout, stderr = self._run_command(command)
-        list_path.unlink(missing_ok=True)
+        stem = f"event_{stamp}_{event.event_id[:8]}_part_{part_index:04d}"
+        final_path = day / f"{stem}.mp4"
+        temporary_path = day / f".{stem}.mp4.part"
+        return final_path, temporary_path
+
+    def _probe_json(self, command: list[str], label: str) -> dict[str, Any]:
+        returncode, stdout, stderr = self._run_command(command)
         if returncode != 0:
-            error = stderr.decode(errors="replace")[-2000:]
-            self.log(f"remux falhou rc={returncode}: {error}")
-            self._record_failure(event, segments, error, clip_path)
-            raise RecordingError(f"remux falhou (rc={returncode}): {error}")
-
-        probe_command = [
-            self.ffprobe,
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name:format=duration",
-            "-of",
-            "json",
-            str(clip_path),
-        ]
-        probe_rc, probe_stdout, probe_stderr = self._run_command(probe_command)
+            detail = stderr.decode(errors="replace")[-2000:]
+            raise RecordingError(f"{label} falhou (rc={returncode}): {detail}")
         try:
-            probe = json.loads(probe_stdout) if probe_rc == 0 else {}
-            streams = probe.get("streams", [])
-            duration = float(probe.get("format", {}).get("duration", 0))
-            codec = streams[0]["codec_name"] if streams else None
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError):
-            streams, duration, codec = [], 0.0, None
-        if not streams or duration <= 0 or not clip_path.exists() or clip_path.stat().st_size <= 0:
-            error = probe_stderr.decode(errors="replace") or "ffprobe não validou vídeo"
-            self.log(f"ffprobe inválido: {error}")
-            self._record_failure(event, segments, error, clip_path)
-            raise RecordingError(f"ffprobe não validou o clipe: {error}")
+            value = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise RecordingError(f"{label} retornou JSON inválido") from exc
+        if not isinstance(value, dict):
+            raise RecordingError(f"{label} retornou estrutura inválida")
+        return value
 
-        metadata = self._base_metadata(event, segments, clip_path)
-        metadata.update({"status": "completed", "codec": codec, "duration": duration})
-        self._write_metadata(clip_path, metadata)
-        self.log(f"evento final criado: {clip_path} codec={codec} duração={duration}")
-        self.state = RecordingState.IDLE
-        self.event = None
-        return True
+    def _validate_mp4(self, path: pathlib.Path) -> dict[str, Any]:
+        if self.input_codec not in {"h264", "hevc"}:
+            raise RecordingError("codec de entrada não foi validado")
+        if not path.exists() or path.stat().st_size <= 0:
+            raise RecordingError("arquivo MP4 temporário ausente ou vazio")
+
+        media = self._probe_json(
+            [
+                self.ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name:format=format_name,duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            "ffprobe do MP4",
+        )
+        streams = media.get("streams")
+        if not isinstance(streams, list) or len(streams) != 1:
+            raise RecordingError("MP4 deve possuir exatamente uma stream de vídeo")
+        codec = streams[0].get("codec_name")
+        if codec not in {"h264", "hevc"}:
+            raise RecordingError(f"codec MP4 não suportado: {codec}")
+        if codec != self.input_codec:
+            raise RecordingError(
+                f"codec do MP4 ({codec}) difere do RTSP ({self.input_codec})"
+            )
+        format_name = media.get("format", {}).get("format_name", "")
+        formats = set(str(format_name).split(","))
+        if not formats.intersection({"mov", "mp4", "m4a", "3gp", "3g2", "mj2"}):
+            raise RecordingError(f"contêiner MP4/MOV inválido: {format_name}")
+        try:
+            duration = float(media.get("format", {}).get("duration", 0))
+        except (TypeError, ValueError) as exc:
+            raise RecordingError("duração inválida no MP4") from exc
+        if duration <= 0:
+            raise RecordingError("duração do MP4 deve ser maior que zero")
+
+        packets = self._probe_json(
+            [
+                self.ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-read_intervals",
+                "%+#1",
+                "-show_packets",
+                "-show_entries",
+                "packet=flags",
+                "-of",
+                "json",
+                str(path),
+            ],
+            "ffprobe do primeiro pacote",
+        ).get("packets", [])
+        if not packets or "K" not in str(packets[0].get("flags", "")):
+            raise RecordingError("primeiro pacote de vídeo não é keyframe")
+
+        frames = self._probe_json(
+            [
+                self.ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-read_intervals",
+                "%+#1",
+                "-show_frames",
+                "-show_entries",
+                "frame=key_frame,pict_type",
+                "-of",
+                "json",
+                str(path),
+            ],
+            "ffprobe do primeiro frame",
+        ).get("frames", [])
+        if not frames or frames[0].get("key_frame") != 1:
+            raise RecordingError("primeiro frame decodificado não é keyframe")
+        pict_type = frames[0].get("pict_type")
+        if pict_type is not None and pict_type != "I":
+            raise RecordingError(f"primeiro frame possui pict_type={pict_type}, esperado I")
+
+        decode_rc, _stdout, decode_stderr = self._run_command(
+            [
+                self.ffmpeg,
+                "-v",
+                "error",
+                "-i",
+                str(path),
+                "-map",
+                "0:v:0",
+                "-f",
+                "null",
+                "-",
+            ]
+        )
+        if decode_rc != 0 or decode_stderr.strip():
+            detail = decode_stderr.decode(errors="replace")[-2000:]
+            raise RecordingError(
+                f"decodificação integral do MP4 falhou (rc={decode_rc}): {detail}"
+            )
+        return {
+            "codec": codec,
+            "duration": duration,
+            "starts_with_keyframe": True,
+            "first_frame_pict_type": pict_type,
+        }
+
+    def finalize_part(
+        self,
+        segments: list[Segment],
+        reason: str,
+        is_final: bool,
+    ) -> int:
+        if self.event is None:
+            raise RecordingError("não há evento para finalizar")
+        event = self.event
+        candidate = list(segments)
+        if any(
+            current.sequence != previous.sequence + 1
+            for previous, current in zip(candidate, candidate[1:])
+        ):
+            error = "lacuna na sequência de segmentos do fragmento"
+            self._record_failure(event, candidate, error, reason)
+            raise RecordingError(error)
+        while candidate:
+            final_path, temporary_path = self._event_paths(
+                event, event.part_index
+            )
+            concat_input = "concat:" + "|".join(
+                str(segment.path.resolve()) for segment in candidate
+            )
+            command = [
+                self.ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                concat_input,
+                "-map",
+                "0:v:0",
+                "-c:v",
+                "copy",
+                "-movflags",
+                "+faststart",
+                "-f",
+                "mp4",
+                "-y",
+                str(temporary_path),
+            ]
+            self.log("início da finalização da parte: " + " ".join(command))
+            try:
+                returncode, _stdout, stderr = self._run_command(command)
+                if returncode != 0:
+                    detail = stderr.decode(errors="replace")[-2000:]
+                    raise RecordingError(
+                        f"remux falhou (rc={returncode}): {detail}"
+                    )
+                validation = self._validate_mp4(temporary_path)
+                if validation["duration"] > self.config.max_fragment_seconds:
+                    if len(candidate) == 1:
+                        raise RecordingError(
+                            "um único segmento produz MP4 acima de "
+                            "max_fragment_seconds; espaçamento de keyframes "
+                            "incompatível"
+                        )
+                    temporary_path.unlink(missing_ok=True)
+                    candidate.pop()
+                    continue
+                temporary_path.replace(final_path)
+                actual_final = is_final and len(candidate) == len(segments)
+                actual_reason = reason if actual_final else "max_duration"
+                metadata = self._base_metadata(
+                    event,
+                    candidate,
+                    final_path,
+                    actual_reason,
+                    actual_final,
+                )
+                metadata.update({"status": "completed", **validation})
+                self._write_metadata(final_path, metadata)
+                self.log(
+                    f"parte criada: {final_path} codec={validation['codec']} "
+                    f"duração={validation['duration']}"
+                )
+                consumed = {segment.path for segment in candidate}
+                event.preserved.difference_update(consumed)
+                event.part_first_sequence = candidate[-1].sequence + 1
+                event.part_index += 1
+                return len(candidate)
+            except RecordingError as exc:
+                temporary_path.unlink(missing_ok=True)
+                self._record_failure(event, candidate, str(exc), reason)
+                raise
+        raise RecordingError("nenhum segmento coube no fragmento")
 
     def _base_metadata(
         self,
         event: Event,
         segments: list[Segment],
         clip_path: pathlib.Path | None,
+        reason: str,
+        is_final: bool,
     ) -> dict[str, Any]:
         return {
             "event_id": event.event_id,
+            "part_index": event.part_index,
+            "part_count_known": event.part_index if is_final else None,
+            "is_first_part": event.part_index == 1,
+            "is_final_part": is_final,
+            "fragment_reason": reason,
             "detector": self.detector,
             "motion_on_ms": event.motion_on_ms,
             "motion_off_ms": event.motion_off_ms,
-            "post_started_ms": event.post_started_ms,
-            "post_started_monotonic": event.post_started_monotonic,
             "post_end_ms": event.post_end_ms,
+            "first_sequence": segments[0].sequence if segments else event.part_first_sequence,
+            "last_sequence": segments[-1].sequence if segments else None,
+            "segment_count": len(segments),
             "segments": [str(segment.path) for segment in segments],
             "clip_path": str(clip_path) if clip_path else None,
+            "configured_max_fragment_seconds": self.config.max_fragment_seconds,
+            "container": "mp4",
+            "input_codec": self.input_codec,
             "created_at": dt.datetime.fromtimestamp(
                 self.wall_time(), dt.timezone.utc
             ).isoformat(),
@@ -558,15 +849,21 @@ class RecordingController:
         event: Event,
         segments: list[Segment],
         error: str,
-        clip_path: pathlib.Path | None = None,
+        reason: str,
     ) -> None:
-        event_time = dt.datetime.fromtimestamp(event.motion_on_ms / 1000.0).astimezone()
-        day = self.config.recordings_dir / event_time.strftime("%Y-%m-%d")
-        day.mkdir(parents=True, exist_ok=True)
-        if clip_path is None:
-            clip_path = day / f"failed_{event.event_id}.mkv"
-        metadata = self._base_metadata(event, segments, clip_path)
-        metadata.update({"status": "failed", "codec": None, "duration": None})
+        clip_path, _temporary_path = self._event_paths(
+            event, event.part_index
+        )
+        metadata = self._base_metadata(event, segments, clip_path, reason, False)
+        metadata.update(
+            {
+                "status": "failed",
+                "codec": None,
+                "duration": None,
+                "starts_with_keyframe": False,
+                "first_frame_pict_type": None,
+            }
+        )
         metadata["errors"] = [error]
         self._write_metadata(clip_path, metadata)
 
@@ -618,8 +915,10 @@ def build_segmenter_command(
         "mpegts",
         "-segment_time",
         str(config.segment_duration_seconds),
+        "-break_non_keyframes",
+        "0",
         "-reset_timestamps",
-        "1",
+        "0",
         "-segment_start_number",
         str(start_number),
         str(config.segments_dir / "segment_%012d.ts"),

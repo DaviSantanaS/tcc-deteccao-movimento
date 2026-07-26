@@ -333,6 +333,30 @@ class ProcessTests(unittest.TestCase):
 
         probe.assert_not_called()
 
+    def test_h264_and_hevc_stream_codecs_are_accepted(self) -> None:
+        for codec_name in ("h264", "hevc"):
+            with self.subTest(codec=codec_name):
+                publisher = child_mock("publisher")
+                with mock.patch.object(
+                    self.supervisor,
+                    "probe",
+                    return_value=codec_name,
+                ):
+                    self.supervisor.stream(publisher)
+
+    def test_unsupported_stream_codec_is_rejected_explicitly(self) -> None:
+        publisher = child_mock("publisher")
+        with mock.patch.object(
+            self.supervisor,
+            "probe",
+            return_value="vp9",
+        ):
+            with self.assertRaisesRegex(
+                orchestrator.Error,
+                "codec RTSP não suportado: vp9",
+            ):
+                self.supervisor.stream(publisher)
+
     def test_escalates_to_sigkill(self) -> None:
         child = self.supervisor.spawn(
             orchestrator.Spec(
@@ -492,6 +516,72 @@ class PipelineTests(unittest.TestCase):
                 ["mediamtx", "publisher"],
             )
             shutdown.assert_called_once_with()
+
+    def test_exactly_one_continuous_segmenter_is_started(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            pipeline_config = config(root)
+            pipeline_config["recording"] = {
+                "enabled": True,
+                "segments_dir": str(root / "segments"),
+                "recordings_dir": str(root / "recordings"),
+                "pre_event_seconds": 1,
+                "idle_retention_seconds": 1,
+                "max_fragment_seconds": 90,
+            }
+            supervisor = orchestrator.Supervisor(
+                pipeline_config,
+                root,
+                "diff",
+            )
+            seen: list[str] = []
+
+            def spawn(spec: orchestrator.Spec) -> orchestrator.Child:
+                seen.append(spec.name)
+                child = child_mock(spec.name)
+                child.spec = spec
+                supervisor.children.append(child)
+                return child
+
+            assert supervisor.recording is not None
+            with mock.patch.object(
+                supervisor,
+                "preflight",
+                side_effect=supervisor.fifo.prepare,
+            ), mock.patch.object(
+                supervisor.recording,
+                "start",
+            ), mock.patch.object(
+                supervisor,
+                "spawn",
+                side_effect=spawn,
+            ), mock.patch.object(
+                supervisor,
+                "port",
+            ), mock.patch.object(
+                supervisor,
+                "stream",
+                side_effect=lambda _child: supervisor.recording.set_input_codec("hevc"),
+            ), mock.patch.object(
+                supervisor,
+                "segmenter_ready",
+            ), mock.patch.object(
+                supervisor,
+                "detector_ready",
+            ):
+                supervisor.start()
+
+            self.assertEqual(
+                seen,
+                ["mediamtx", "publisher", "segmenter", "detector"],
+            )
+            self.assertEqual(seen.count("segmenter"), 1)
+            segmenter = next(
+                child for child in supervisor.children if child.spec.name == "segmenter"
+            )
+            self.assertIn("rtsp://", " ".join(segmenter.spec.argv))
+            supervisor.stop.set()
+            supervisor.fifo.join(1)
 
 
 class SignalTests(unittest.TestCase):
