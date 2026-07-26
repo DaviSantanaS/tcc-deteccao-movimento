@@ -230,6 +230,18 @@ class ProcessTests(unittest.TestCase):
             self.supervisor.shutdown()
         self.temporary.cleanup()
 
+    def wait_for_ready_file(
+        self,
+        ready_file: pathlib.Path,
+        timeout: float = 2,
+    ) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if ready_file.exists():
+                return
+            time.sleep(0.01)
+        self.fail(f"processo não sinalizou prontidão: {ready_file}")
+
     def test_separate_logs_no_shell_session(self) -> None:
         spec = orchestrator.Spec(
             "child",
@@ -358,6 +370,7 @@ class ProcessTests(unittest.TestCase):
                 self.supervisor.stream(publisher)
 
     def test_escalates_to_sigkill(self) -> None:
+        ready_file = self.root / "ignore.ready"
         child = self.supervisor.spawn(
             orchestrator.Spec(
                 "child",
@@ -365,13 +378,15 @@ class ProcessTests(unittest.TestCase):
                     sys.executable,
                     str(FAKE),
                     "--ignore",
+                    "--ready-file",
+                    str(ready_file),
                 ],
                 self.root,
                 [],
                 {},
             )
         )
-        time.sleep(0.08)
+        self.wait_for_ready_file(ready_file)
 
         with mock.patch(
             "orchestrator.os.killpg",
@@ -393,16 +408,22 @@ class ProcessTests(unittest.TestCase):
         self.assertIsNotNone(child.rc)
 
     def test_graceful_shutdown_stops_at_sigint(self) -> None:
+        ready_file = self.root / "graceful.ready"
         child = self.supervisor.spawn(
             orchestrator.Spec(
                 "child",
-                [sys.executable, str(FAKE)],
+                [
+                    sys.executable,
+                    str(FAKE),
+                    "--ready-file",
+                    str(ready_file),
+                ],
                 self.root,
                 [],
                 {},
             )
         )
-        time.sleep(0.08)
+        self.wait_for_ready_file(ready_file)
 
         with mock.patch(
             "orchestrator.os.killpg",

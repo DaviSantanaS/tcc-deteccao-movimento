@@ -80,3 +80,34 @@ stream de vídeo H.264 ou HEVC com o mesmo codec do RTSP, a duração for positi
 e não exceder o limite, o primeiro pacote e frame forem keyframes, o primeiro
 `pict_type` for `I` quando disponível e a decodificação integral terminar sem
 erro.
+
+## Exemplo de webcam
+
+`orchestrator.webcam.example.json` mostra captura MJPEG 1280x720 por
+`/dev/video0` e publicação H.264 com NVENC. O dispositivo, resolução, taxa de
+quadros e disponibilidade do encoder devem ser ajustados ao computador onde o
+pipeline for executado. O encoder aparece apenas na conversão da fonte física
+MJPEG para o stream RTSP H.264; o caminho RTSP → MPEG-TS → MP4 continua usando
+`-c:v copy`.
+
+## Eventos adiados e shutdown
+
+Enquanto uma parte final é remuxada e validada, o controlador continua
+recebendo o MotionBus. Eventos posteriores ao fim do pós-evento corrente são
+mantidos em uma fila ordenada e reproduzidos pela mesma máquina de estados
+depois que o evento atual termina.
+
+No shutdown, eventos que já foram aceitos nessa fila não são descartados. O
+controlador os reproduz em ordem e tenta finalizar cada evento lógico
+resultante com os segmentos completos disponíveis, marcando a parte como
+finalizada por shutdown. Uma falha nessa finalização é propagada ao Supervisor.
+
+O ponto de linearização da publicação final é a leitura do contador de entrada
+imediatamente posterior aos renames do MP4 e do JSON. O contador é lido em
+seções críticas curtas, mas nenhum lock de entrada é mantido durante I/O. Se
+uma entrada for anunciada entre a preparação e esse ponto, os arquivos
+publicados são revertidos e a queue é processada antes de uma nova tentativa.
+Se o contador permanecer estável, consumo dos segmentos, avanço da âncora e do
+índice e transição final para `IDLE` ocorrem na mesma seção crítica dessa
+leitura. Assim, `enqueue()` é ordenado integralmente antes ou depois do commit
+de estado, sem filesystem I/O sob o lock.

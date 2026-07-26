@@ -127,7 +127,7 @@ class FIFO:
         self.interval = interval
         self.sink = sink
         self.ready = threading.Event()
-        self.error: BaseException | None = None
+        self.error: Exception | None = None
         self.fd: int | None = None
         self.thread = threading.Thread(
             target=self.run,
@@ -201,7 +201,7 @@ class FIFO:
                     output.write(
                         buffer.decode(errors="replace") + "\n"
                     )
-        except BaseException as exc:
+        except Exception as exc:
             self.error = exc
             self.ready.set()
         finally:
@@ -433,6 +433,8 @@ class Supervisor:
                 shell=False,
                 start_new_session=True,
             )
+        # Descritores devem fechar até em cancelamento; a exceção-base é
+        # imediatamente relançada e nunca convertida em falha operacional.
         except BaseException:
             stdout.close()
             stderr.close()
@@ -710,7 +712,7 @@ class Supervisor:
             if not pending:
                 break
 
-        recording_error: BaseException | None = None
+        recording_error: Exception | None = None
         try:
             if self.recording is not None:
                 self.recording.shutdown(

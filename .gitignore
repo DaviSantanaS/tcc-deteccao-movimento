@@ -40,6 +40,8 @@
 .DS_Store
 
 # Arquivos compilados
+__pycache__/
+*.py[cod]
 *.o
 *.so
 *.a

@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -44,6 +45,7 @@ class RecordingConfig:
     command_timeout_seconds: float
     max_ring_bytes: int | None
     max_fragment_seconds: float
+    decode_timeout_seconds: float
 
     @classmethod
     def load(
@@ -125,6 +127,7 @@ class RecordingConfig:
             command_timeout_seconds=positive("command_timeout_seconds", 30),
             max_ring_bytes=max_ring_bytes,
             max_fragment_seconds=max_fragment,
+            decode_timeout_seconds=positive("decode_timeout_seconds", 180),
         )
 
 
@@ -150,10 +153,52 @@ class Event:
     first_sequence: int | None = None
     part_first_sequence: int | None = None
     part_index: int = 1
+    generation: int = 0
 
     def __post_init__(self) -> None:
         if self.preserved is None:
             self.preserved = set()
+
+
+@dataclass(frozen=True)
+class MotionInput:
+    sequence: int
+    line: str
+
+
+@dataclass(frozen=True)
+class DeferredMotionEvent:
+    kind: str
+    timestamp_ms: int
+
+    @property
+    def line(self) -> str:
+        return f"{self.kind} {self.timestamp_ms}"
+
+
+@dataclass(frozen=True)
+class FinalizationJob:
+    job_id: str
+    event_id: str
+    generation: int
+    part_index: int
+    expected_first_sequence: int
+    segments: tuple[Segment, ...]
+    mode: str
+    reason: str
+    observed_input_sequence: int
+    final_path: pathlib.Path
+    temporary_path: pathlib.Path
+
+
+@dataclass
+class FinalizationResult:
+    job: FinalizationJob
+    segments: list[Segment]
+    durations: dict[pathlib.Path, float]
+    temporary_path: pathlib.Path | None = None
+    validation: dict[str, Any] | None = None
+    error: Exception | None = None
 
 
 class SegmentCatalog:
@@ -313,10 +358,27 @@ class RecordingController:
         self.catalog = catalog or SegmentCatalog(config, monotonic)
         self.state = RecordingState.IDLE
         self.event: Event | None = None
-        self.events: queue.Queue[str] = queue.Queue()
+        self.events: queue.Queue[MotionInput] = queue.Queue()
+        self.deferred_events: deque[DeferredMotionEvent] = deque()
+        self._input_lock = threading.Lock()
+        self._input_sequence = 0
+        self._processed_input_sequence = 0
         self.stop = threading.Event()
+        self.shutdown_requested = threading.Event()
         self.thread = threading.Thread(target=self.run, name="recording-controller")
-        self.error: BaseException | None = None
+        self.worker_stop = threading.Event()
+        self.jobs: queue.Queue[FinalizationJob | None] = queue.Queue(maxsize=1)
+        self.results: queue.Queue[FinalizationResult] = queue.Queue()
+        self.worker_thread = threading.Thread(
+            target=self.run_worker,
+            name="recording-finalizer",
+        )
+        self.pending_job: FinalizationJob | None = None
+        self.retry_final_reason: str | None = None
+        self.last_evaluated_sequence: int | None = None
+        self._process_lock = threading.Lock()
+        self._active_process: subprocess.Popen[bytes] | None = None
+        self.error: Exception | None = None
         self.log_path = self.config.recordings_dir.parent / "logs" / "recording.log"
         self._log_file: Any = None
 
@@ -332,11 +394,14 @@ class RecordingController:
         self.catalog.prepare()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self.log_path.open("a", encoding="utf-8", buffering=1)
+        self.worker_thread.start()
         self.thread.start()
 
     def enqueue(self, line: str) -> None:
         if not self.stop.is_set():
-            self.events.put_nowait(line)
+            with self._input_lock:
+                self._input_sequence += 1
+                self.events.put_nowait(MotionInput(self._input_sequence, line))
 
     def log(self, message: str) -> None:
         if self._log_file is not None:
@@ -349,7 +414,7 @@ class RecordingController:
         self.log(f"estado {self.state.value} -> {new_state.value}: {reason}")
         self.state = new_state
 
-    def handle_line(self, line: str) -> None:
+    def handle_line(self, line: str, from_deferred: bool = False) -> None:
         parts = line.split()
         if len(parts) != 2 or parts[0] not in {"MOTION_ON", "MOTION_OFF"}:
             self.log(f"evento inválido ignorado: {line!r}")
@@ -360,12 +425,35 @@ class RecordingController:
             self.log(f"timestamp inválido ignorado: {line!r}")
             return
 
-        if parts[0] == "MOTION_ON":
-            self.motion_on(timestamp_ms)
+        kind = parts[0]
+        if (
+            self.state is RecordingState.FINALIZING
+            and self.event is not None
+            and (
+                self.deferred_events
+                or kind == "MOTION_OFF"
+                or self.event.post_end_ms is None
+                or timestamp_ms > self.event.post_end_ms
+            )
+        ):
+            deferred = DeferredMotionEvent(kind, timestamp_ms)
+            if from_deferred:
+                self.deferred_events.appendleft(deferred)
+            else:
+                self.deferred_events.append(deferred)
+            self.log(f"evento adiado durante FINALIZING: {deferred.line}")
+            return
+
+        if kind == "MOTION_ON":
+            self.motion_on(timestamp_ms, from_deferred)
         else:
             self.motion_off(timestamp_ms)
 
-    def motion_on(self, timestamp_ms: int) -> None:
+    def motion_on(
+        self,
+        timestamp_ms: int,
+        from_deferred: bool = False,
+    ) -> None:
         if self.state is RecordingState.IDLE:
             selected = self.catalog.select_pre_event(timestamp_ms)
             if not selected:
@@ -384,14 +472,51 @@ class RecordingController:
             return
         if self.state is RecordingState.POST_EVENT:
             if self.event is not None:
+                if (
+                    self.event.post_end_ms is not None
+                    and timestamp_ms > self.event.post_end_ms
+                ):
+                    deferred = DeferredMotionEvent("MOTION_ON", timestamp_ms)
+                    if from_deferred:
+                        self.deferred_events.appendleft(deferred)
+                    else:
+                        self.deferred_events.append(deferred)
+                    self.transition(
+                        RecordingState.FINALIZING,
+                        "MOTION_ON posterior ao pós-evento",
+                    )
+                    self.schedule_job("final", "motion_end")
+                    return
+                self.event.generation += 1
                 self.event.motion_off_ms = None
                 self.event.post_started_ms = None
                 self.event.post_started_monotonic = None
                 self.event.post_deadline_monotonic = None
                 self.event.post_end_ms = None
+                self.retry_final_reason = None
             self.transition(RecordingState.MOTION_ACTIVE, "movimento retornou")
             return
+        if self.state is RecordingState.FINALIZING and self.event is not None:
+            if (
+                self.event.post_end_ms is not None
+                and timestamp_ms <= self.event.post_end_ms
+            ):
+                self.event.generation += 1
+                self.event.motion_off_ms = None
+                self.event.post_started_ms = None
+                self.event.post_started_monotonic = None
+                self.event.post_deadline_monotonic = None
+                self.event.post_end_ms = None
+                self.retry_final_reason = None
+                self.transition(RecordingState.MOTION_ACTIVE, "movimento retornou")
+                return
         self.log("MOTION_ON ignorado durante FINALIZING")
+
+    def replay_deferred_events(self) -> None:
+        while self.deferred_events and self.state is not RecordingState.FINALIZING:
+            deferred = self.deferred_events.popleft()
+            self.log(f"reproduzindo evento adiado: {deferred.line}")
+            self.handle_line(deferred.line, from_deferred=True)
 
     def motion_off(self, timestamp_ms: int) -> None:
         if self.state is RecordingState.IDLE:
@@ -422,39 +547,103 @@ class RecordingController:
     def tick(self) -> None:
         if self.state is not RecordingState.IDLE:
             self.update_preserved()
-            self.finalize_due_parts()
         preserved = self.event.preserved if self.event is not None else set()
         self.catalog.retain(preserved, self.log)
 
-        if self.state is not RecordingState.POST_EVENT or self.event is None:
+        if self.event is None or self.pending_job is not None:
             return
-        deadline = self.event.post_deadline_monotonic
-        assert deadline is not None
-        if self.monotonic() < deadline + self.config.finalization_margin_seconds:
+        if self.state is RecordingState.FINALIZING:
+            with self._input_lock:
+                has_unprocessed_input = (
+                    self._input_sequence > self._processed_input_sequence
+                )
+            if has_unprocessed_input:
+                return
+            reason = self.retry_final_reason or (
+                "shutdown" if self.shutdown_requested.is_set() else "motion_end"
+            )
+            self.retry_final_reason = None
+            self.schedule_job("final", reason)
             return
-        finalized = self.catalog.current_session()
-        if not finalized or self.event.post_end_ms is None:
-            return
-        if finalized[-1].mtime < self.event.post_end_ms / 1000.0:
-            return
-        self.transition(RecordingState.FINALIZING, "pós-evento concluído")
-        self.finalize()
+        if self.state is RecordingState.POST_EVENT:
+            deadline = self.event.post_deadline_monotonic
+            assert deadline is not None
+            if self.monotonic() >= deadline + self.config.finalization_margin_seconds:
+                finalized = self.catalog.current_session()
+                if (
+                    finalized
+                    and self.event.post_end_ms is not None
+                    and finalized[-1].mtime >= self.event.post_end_ms / 1000.0
+                ):
+                    self.transition(RecordingState.FINALIZING, "pós-evento concluído")
+                    self.schedule_job("final", "motion_end")
+                    return
+        if self.state in {RecordingState.MOTION_ACTIVE, RecordingState.POST_EVENT}:
+            segments = self.catalog.select_event(self.event)
+            if (
+                segments
+                and segments[-1].sequence != self.last_evaluated_sequence
+            ):
+                self.schedule_job("evaluate", "max_duration")
 
     def run(self) -> None:
         try:
-            while not self.stop.is_set():
+            while True:
+                if (
+                    self.worker_thread.ident is not None
+                    and not self.worker_thread.is_alive()
+                    and not self.worker_stop.is_set()
+                ):
+                    raise RecordingError(
+                        "worker de gravação encerrou inesperadamente"
+                    )
+                processed_event = False
                 try:
-                    line = self.events.get(timeout=0.05)
+                    motion_input = self.events.get(timeout=0.02)
                 except queue.Empty:
-                    self.tick()
+                    pass
+                else:
+                    self._processed_input_sequence = motion_input.sequence
+                    self.handle_line(motion_input.line)
+                    processed_event = True
+                while True:
+                    try:
+                        motion_input = self.events.get_nowait()
+                    except queue.Empty:
+                        break
+                    self._processed_input_sequence = motion_input.sequence
+                    self.handle_line(motion_input.line)
+                    processed_event = True
+                self.apply_results()
+                if self.error is not None:
+                    break
+                if self.shutdown_requested.is_set():
+                    if self.error is not None:
+                        break
+                    if self.event is not None and self.pending_job is None:
+                        self.event.finalized_by_shutdown = True
+                        self.transition(RecordingState.FINALIZING, "shutdown")
+                        self.schedule_job("final", "shutdown")
+                    if (
+                        self.event is None
+                        and self.pending_job is None
+                        and not self.deferred_events
+                        and self.events.empty()
+                    ):
+                        break
                     continue
-                self.handle_line(line)
                 self.tick()
-        except BaseException as exc:
+                if self.stop.is_set() and not processed_event:
+                    break
+        except Exception as exc:
             self.error = exc
             self.log(f"falha do controlador: {exc}")
 
-    def _run_command(self, command: list[str]) -> tuple[int, bytes, bytes]:
+    def _run_command(
+        self,
+        command: list[str],
+        timeout: float | None = None,
+    ) -> tuple[int, bytes, bytes]:
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -462,8 +651,12 @@ class RecordingController:
             shell=False,
             start_new_session=True,
         )
+        with self._process_lock:
+            self._active_process = process
         try:
-            stdout, stderr = process.communicate(timeout=self.config.command_timeout_seconds)
+            stdout, stderr = process.communicate(
+                timeout=timeout or self.config.command_timeout_seconds
+            )
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -471,19 +664,24 @@ class RecordingController:
                 pass
             stdout, stderr = process.communicate()
             return 124, stdout, stderr
+        finally:
+            with self._process_lock:
+                if self._active_process is process:
+                    self._active_process = None
         return process.returncode, stdout, stderr
 
     def _metadata_path(self, clip_path: pathlib.Path) -> pathlib.Path:
         return clip_path.with_suffix(".json")
 
-    def _write_metadata(self, clip_path: pathlib.Path, metadata: dict[str, Any]) -> None:
-        target = self._metadata_path(clip_path)
-        temporary = target.with_suffix(".json.tmp")
-        temporary.write_text(
+    def _write_metadata(
+        self,
+        target: pathlib.Path,
+        metadata: dict[str, Any],
+    ) -> None:
+        target.write_text(
             json.dumps(metadata, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        temporary.replace(target)
 
     def _segment_duration(self, segment: Segment) -> float:
         cached = self.catalog.cached_duration(segment)
@@ -514,73 +712,370 @@ class RecordingController:
             raise RecordingError(
                 f"não foi possível medir o segmento {segment.sequence}: {detail}"
             )
-        self.catalog.cache_duration(segment, duration)
         return duration
 
-    def _prefix_within_limit(self, segments: list[Segment]) -> list[Segment]:
+    def _prefix_within_limit(
+        self,
+        segments: list[Segment],
+        durations: dict[pathlib.Path, float] | None = None,
+    ) -> list[Segment]:
         selected: list[Segment] = []
         total = 0.0
         for segment in segments:
-            duration = self._segment_duration(segment)
+            duration = (
+                durations[segment.path]
+                if durations is not None
+                else self._segment_duration(segment)
+            )
             if total + duration > self.config.max_fragment_seconds:
                 break
             selected.append(segment)
             total += duration
         return selected
 
-    def finalize_due_parts(self) -> None:
-        if self.event is None or self.state is RecordingState.FINALIZING:
+    def schedule_job(self, mode: str, reason: str) -> None:
+        if self.event is None or self.pending_job is not None:
             return
-        while True:
-            segments = self.catalog.select_event(self.event)
-            if not segments:
+        segments = self.catalog.select_event(self.event)
+        if not segments:
+            if mode == "evaluate":
                 return
-            durations = [self._segment_duration(segment) for segment in segments]
-            if sum(durations) <= self.config.max_fragment_seconds:
-                return
-            prefix = self._prefix_within_limit(segments)
-            if not prefix:
-                raise RecordingError(
-                    "um único segmento excede max_fragment_seconds; "
-                    "o espaçamento de keyframes é incompatível com gravação "
-                    "sem reencode"
-                )
-            self.finalize_part(prefix, "max_duration", is_final=False)
+            error = "nenhum segmento disponível para finalização"
+            self._record_failure(self.event, [], error, reason)
+            raise RecordingError(error)
+        expected = self.event.part_first_sequence
+        if expected is None:
+            raise RecordingError("evento sem âncora da parte atual")
+        job = FinalizationJob(
+            job_id=uuid.uuid4().hex,
+            event_id=self.event.event_id,
+            generation=self.event.generation,
+            part_index=self.event.part_index,
+            expected_first_sequence=expected,
+            segments=tuple(segments),
+            mode=mode,
+            reason=reason,
+            observed_input_sequence=self._processed_input_sequence,
+            final_path=self._event_paths(
+                self.event,
+                self.event.part_index,
+            )[0],
+            temporary_path=self._event_paths(
+                self.event,
+                self.event.part_index,
+            )[1],
+        )
+        self.pending_job = job
+        self.jobs.put_nowait(job)
 
-    def finalize(self, shutdown: bool = False) -> bool:
-        if self.event is None:
-            self.state = RecordingState.IDLE
-            return False
-        event = self.event
-        event.finalized_by_shutdown = shutdown
-        self.update_preserved()
-        reason = "shutdown" if shutdown else "motion_end"
-        while True:
-            segments = self.catalog.select_event(event)
-            if not segments:
-                error = "nenhum segmento disponível para finalização"
-                self.log(f"finalização falhou: {error}")
-                self._record_failure(event, [], error, reason)
-                raise RecordingError(error)
-            prefix = self._prefix_within_limit(segments)
-            if not prefix:
-                error = (
-                    "um único segmento excede max_fragment_seconds; "
-                    "o espaçamento de keyframes é incompatível"
+    def run_worker(self) -> None:
+        while not self.worker_stop.is_set():
+            try:
+                job = self.jobs.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if job is None:
+                return
+            try:
+                result = self.prepare_job(job)
+            except Exception as exc:
+                self.cleanup_temporary(job.temporary_path, "worker")
+                result = FinalizationResult(
+                    job,
+                    [],
+                    {},
+                    temporary_path=job.temporary_path,
+                    error=exc,
                 )
-                self._record_failure(event, segments[:1], error, reason)
-                raise RecordingError(error)
-            is_final = len(prefix) == len(segments)
-            consumed = self.finalize_part(
-                prefix,
-                reason if is_final else "max_duration",
-                is_final=is_final,
+            self.results.put(result)
+
+    def cleanup_temporary(
+        self,
+        path: pathlib.Path,
+        context: str,
+    ) -> tuple[bool, str | None]:
+        failure: str | None = None
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            failure = str(exc)
+            self.log(f"falha ao limpar temporário ({context}): {exc}")
+        try:
+            absent = not path.exists()
+        except OSError as exc:
+            absent = False
+            detail = str(exc)
+            failure = f"{failure}; {detail}" if failure else detail
+            self.log(f"falha ao verificar cleanup ({context}): {exc}")
+        if not absent and failure is None:
+            failure = "arquivo permaneceu após unlink"
+            self.log(f"falha ao limpar temporário ({context}): {failure}")
+        return absent, failure
+
+    def prepare_job(self, job: FinalizationJob) -> FinalizationResult:
+        segments = list(job.segments)
+        if not segments:
+            raise RecordingError("lista de segmentos vazia")
+        if segments[0].sequence != job.expected_first_sequence:
+            raise RecordingError(
+                "fronteira inválida: "
+                f"esperada={job.expected_first_sequence}, "
+                f"encontrada={segments[0].sequence}, "
+                f"event_id={job.event_id}, part_index={job.part_index}"
             )
-            if is_final and consumed == len(prefix):
-                break
-        self.state = RecordingState.IDLE
-        self.event = None
+        if any(
+            current.sequence != previous.sequence + 1
+            for previous, current in zip(segments, segments[1:])
+        ):
+            raise RecordingError("lacuna interna na sequência de segmentos")
+        durations = {
+            segment.path: self._segment_duration(segment)
+            for segment in segments
+        }
+        total = sum(durations.values())
+        if job.mode == "evaluate" and total <= self.config.max_fragment_seconds:
+            return FinalizationResult(job, [], durations)
+        candidate = self._prefix_within_limit(segments, durations)
+        if not candidate:
+            raise RecordingError(
+                "um único segmento excede max_fragment_seconds; "
+                "espaçamento de keyframes incompatível"
+            )
+        return self.prepare_part(job, candidate, durations)
+
+    def apply_results(self) -> None:
+        while True:
+            try:
+                result = self.results.get_nowait()
+            except queue.Empty:
+                return
+            if self.pending_job is None or result.job.job_id != self.pending_job.job_id:
+                if result.temporary_path is not None:
+                    self.cleanup_temporary(result.temporary_path, "job desconhecido")
+                continue
+            self.pending_job = None
+            if self.result_is_obsolete(result):
+                if result.temporary_path is not None:
+                    self.cleanup_temporary(result.temporary_path, "job obsoleto")
+                self.log(
+                    "resultado obsoleto descartado, inclusive erro: "
+                    f"job={result.job.job_id}"
+                )
+                continue
+            for path, duration in result.durations.items():
+                segment = next(
+                    (item for item in result.job.segments if item.path == path),
+                    None,
+                )
+                if segment is not None:
+                    self.catalog.cache_duration(segment, duration)
+            if result.error is not None:
+                self.handle_job_error(result)
+                return
+            if not result.segments:
+                self.last_evaluated_sequence = result.job.segments[-1].sequence
+                if self.state is RecordingState.FINALIZING:
+                    self.schedule_job("final", result.job.reason)
+                continue
+            assert self.event is not None
+            is_final = (
+                result.job.mode == "final"
+                and result.job.generation == self.event.generation
+                and len(result.segments) == len(result.job.segments)
+            )
+            reason = result.job.reason if is_final else "max_duration"
+            published = self.publish_result(result, reason, is_final)
+            if not published:
+                if self.error is None:
+                    self.retry_final_reason = result.job.reason
+                continue
+            if is_final:
+                self.retry_final_reason = None
+                self.replay_deferred_events()
+            elif self.state is RecordingState.FINALIZING:
+                self.schedule_job("final", result.job.reason)
+
+    def result_is_obsolete(self, result: FinalizationResult) -> bool:
+        if self.event is None:
+            return True
+        job = result.job
+        if (
+            self.event.event_id != job.event_id
+            or self.event.part_index != job.part_index
+            or self.event.part_first_sequence != job.expected_first_sequence
+        ):
+            return True
+        return job.mode == "final" and self.event.generation != job.generation
+
+    def handle_job_error(self, result: FinalizationResult) -> None:
+        if result.temporary_path is not None:
+            self.cleanup_temporary(
+                result.temporary_path,
+                "resultado com erro",
+            )
+        error = result.error
+        assert error is not None
+        if self.event is not None and self.event.event_id == result.job.event_id:
+            try:
+                self._record_failure(
+                    self.event,
+                    result.segments or list(result.job.segments),
+                    str(error),
+                    result.job.reason,
+                )
+            except OSError as metadata_error:
+                error = RecordingError(
+                    f"{error}; falha ao registrar metadata: {metadata_error}"
+                )
+        self.error = (
+            error
+            if isinstance(error, RecordingError)
+            else RecordingError(f"worker de gravação falhou: {error}")
+        )
+        self.log(f"falha do worker: {self.error}")
+
+    def publish_result(
+        self,
+        result: FinalizationResult,
+        reason: str,
+        is_final: bool,
+    ) -> bool:
+        assert self.event is not None
+        assert result.temporary_path is not None
+        assert result.validation is not None
+        job = result.job
+        metadata = self._base_metadata(
+            self.event,
+            result.segments,
+            job.final_path,
+            reason,
+            is_final,
+        )
+        metadata.update({"status": "completed", **result.validation})
+        metadata_path = self._metadata_path(job.final_path)
+        metadata_temporary = metadata_path.with_suffix(".json.tmp")
+        try:
+            self._write_metadata(metadata_temporary, metadata)
+            if is_final:
+                with self._input_lock:
+                    sequence_before_rename = self._input_sequence
+                if sequence_before_rename > job.observed_input_sequence:
+                    self.cleanup_temporary(
+                        result.temporary_path,
+                        "commit final adiado",
+                    )
+                    self.cleanup_temporary(
+                        metadata_temporary,
+                        "metadata final adiada",
+                    )
+                    self.log(
+                        "commit final adiado por evento MotionBus mais novo: "
+                        f"job={job.job_id}"
+                    )
+                    return False
+                result.temporary_path.replace(job.final_path)
+                metadata_temporary.replace(metadata_path)
+                if not self._commit_published_result(
+                    result,
+                    is_final=True,
+                    expected_input_sequence=sequence_before_rename,
+                ):
+                    rollback_errors = self._rollback_published_files(
+                        job.final_path,
+                        metadata_path,
+                    )
+                    if rollback_errors:
+                        detail = "; ".join(rollback_errors)
+                        self.error = RecordingError(
+                            "rollback concorrente incompleto; artefatos "
+                            f"publicados permaneceram: {detail}"
+                        )
+                        self.log(f"falha fatal no rollback concorrente: {detail}")
+                    else:
+                        self.log(
+                            "commit final revertido por evento MotionBus durante "
+                            f"os renames: job={job.job_id}"
+                        )
+                    return False
+            else:
+                result.temporary_path.replace(job.final_path)
+                metadata_temporary.replace(metadata_path)
+                self._commit_published_result(
+                    result,
+                    is_final=False,
+                    expected_input_sequence=None,
+                )
+        except OSError as exc:
+            cleanup_errors = self._rollback_paths(
+                (
+                    (result.temporary_path, "rollback MP4 temporário"),
+                    (metadata_temporary, "rollback JSON temporário"),
+                    (job.final_path, "rollback MP4 final"),
+                    (metadata_path, "rollback JSON final"),
+                )
+            )
+            cleanup_detail = (
+                f"; falhas de cleanup: {'; '.join(cleanup_errors)}"
+                if cleanup_errors
+                else ""
+            )
+            raise RecordingError(
+                f"falha na publicação atômica da parte {job.part_index}: "
+                f"{exc}{cleanup_detail}"
+            ) from exc
+        self.log(
+            f"parte criada: {job.final_path} "
+            f"codec={result.validation['codec']} "
+            f"duração={result.validation['duration']}"
+        )
         return True
+
+    def _commit_published_result(
+        self,
+        result: FinalizationResult,
+        is_final: bool,
+        expected_input_sequence: int | None,
+    ) -> bool:
+        with self._input_lock:
+            if (
+                is_final
+                and self._input_sequence != expected_input_sequence
+            ):
+                return False
+            assert self.event is not None
+            consumed = {segment.path for segment in result.segments}
+            self.event.preserved.difference_update(consumed)
+            self.event.part_first_sequence = result.segments[-1].sequence + 1
+            self.event.part_index += 1
+            self.last_evaluated_sequence = None
+            if is_final:
+                self.retry_final_reason = None
+                self.state = RecordingState.IDLE
+                self.event = None
+            return True
+
+    def _rollback_paths(
+        self,
+        paths: tuple[tuple[pathlib.Path, str], ...],
+    ) -> list[str]:
+        errors: list[str] = []
+        for path, context in paths:
+            absent, failure = self.cleanup_temporary(path, context)
+            if not absent:
+                errors.append(f"{path}: {failure or 'artefato permaneceu'}")
+        return errors
+
+    def _rollback_published_files(
+        self,
+        mp4_path: pathlib.Path,
+        metadata_path: pathlib.Path,
+    ) -> list[str]:
+        return self._rollback_paths(
+            (
+                (mp4_path, "rollback MP4 final concorrente"),
+                (metadata_path, "rollback JSON final concorrente"),
+            )
+        )
 
     def _event_paths(
         self,
@@ -708,8 +1203,14 @@ class RecordingController:
                 "-f",
                 "null",
                 "-",
-            ]
+            ],
+            timeout=self.config.decode_timeout_seconds,
         )
+        if decode_rc == 124:
+            raise RecordingError(
+                "timeout na decodificação integral do MP4 "
+                f"após {self.config.decode_timeout_seconds}s"
+            )
         if decode_rc != 0 or decode_stderr.strip():
             detail = decode_stderr.decode(errors="replace")[-2000:]
             raise RecordingError(
@@ -722,27 +1223,16 @@ class RecordingController:
             "first_frame_pict_type": pict_type,
         }
 
-    def finalize_part(
+    def prepare_part(
         self,
+        job: FinalizationJob,
         segments: list[Segment],
-        reason: str,
-        is_final: bool,
-    ) -> int:
-        if self.event is None:
-            raise RecordingError("não há evento para finalizar")
-        event = self.event
+        durations: dict[pathlib.Path, float],
+    ) -> FinalizationResult:
         candidate = list(segments)
-        if any(
-            current.sequence != previous.sequence + 1
-            for previous, current in zip(candidate, candidate[1:])
-        ):
-            error = "lacuna na sequência de segmentos do fragmento"
-            self._record_failure(event, candidate, error, reason)
-            raise RecordingError(error)
         while candidate:
-            final_path, temporary_path = self._event_paths(
-                event, event.part_index
-            )
+            temporary_path = job.temporary_path
+            completed = False
             concat_input = "concat:" + "|".join(
                 str(segment.path.resolve()) for segment in candidate
             )
@@ -783,31 +1273,18 @@ class RecordingController:
                     temporary_path.unlink(missing_ok=True)
                     candidate.pop()
                     continue
-                temporary_path.replace(final_path)
-                actual_final = is_final and len(candidate) == len(segments)
-                actual_reason = reason if actual_final else "max_duration"
-                metadata = self._base_metadata(
-                    event,
-                    candidate,
-                    final_path,
-                    actual_reason,
-                    actual_final,
+                result = FinalizationResult(
+                    job=job,
+                    segments=candidate,
+                    durations=durations,
+                    temporary_path=temporary_path,
+                    validation=validation,
                 )
-                metadata.update({"status": "completed", **validation})
-                self._write_metadata(final_path, metadata)
-                self.log(
-                    f"parte criada: {final_path} codec={validation['codec']} "
-                    f"duração={validation['duration']}"
-                )
-                consumed = {segment.path for segment in candidate}
-                event.preserved.difference_update(consumed)
-                event.part_first_sequence = candidate[-1].sequence + 1
-                event.part_index += 1
-                return len(candidate)
-            except RecordingError as exc:
-                temporary_path.unlink(missing_ok=True)
-                self._record_failure(event, candidate, str(exc), reason)
-                raise
+                completed = True
+                return result
+            finally:
+                if not completed:
+                    self.cleanup_temporary(temporary_path, "prepare_part")
         raise RecordingError("nenhum segmento coube no fragmento")
 
     def _base_metadata(
@@ -865,28 +1342,58 @@ class RecordingController:
             }
         )
         metadata["errors"] = [error]
-        self._write_metadata(clip_path, metadata)
+        metadata_path = self._metadata_path(clip_path)
+        temporary = metadata_path.with_suffix(".json.tmp")
+        try:
+            self._write_metadata(temporary, metadata)
+            temporary.replace(metadata_path)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise
 
     def shutdown(self, timeout: float = 10) -> None:
-        self.stop.set()
-        if self.thread.ident is not None:
-            self.thread.join(timeout)
-            if self.thread.is_alive():
-                raise RecordingError("thread de gravação não finalizou")
+        self.shutdown_requested.set()
         try:
-            if self.error is not None:
-                raise RecordingError(f"controlador de gravação falhou: {self.error}")
-            if self.state in {
-                RecordingState.MOTION_ACTIVE,
-                RecordingState.POST_EVENT,
-            }:
-                assert self.event is not None
-                self.transition(RecordingState.FINALIZING, "shutdown")
-                self.finalize(shutdown=True)
+            if self.thread.ident is not None:
+                self.thread.join(timeout)
+                if self.thread.is_alive():
+                    self.cancel_active_process()
+                    self.thread.join(2)
+                    if self.thread.is_alive():
+                        raise RecordingError("thread de gravação não finalizou")
         finally:
+            self.worker_stop.set()
+            try:
+                self.jobs.put_nowait(None)
+            except queue.Full:
+                pass
+            if self.worker_thread.ident is not None:
+                self.worker_thread.join(2)
+                if self.worker_thread.is_alive():
+                    self.cancel_active_process()
+                    self.worker_thread.join(2)
             if self._log_file is not None:
                 self._log_file.close()
                 self._log_file = None
+        if self.worker_thread.ident is not None and self.worker_thread.is_alive():
+            raise RecordingError("worker de gravação não finalizou")
+        if self.error is not None:
+            raise RecordingError(f"controlador de gravação falhou: {self.error}")
+
+    def cancel_active_process(self) -> None:
+        with self._process_lock:
+            process = self._active_process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=1)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
 
 def build_segmenter_command(
