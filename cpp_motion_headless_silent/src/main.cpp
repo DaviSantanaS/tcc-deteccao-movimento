@@ -9,8 +9,7 @@
 #include <thread>
 #include <string>
 #include <vector>
-#include <iostream> // apenas para erros
-#include "MotionBus.hpp"
+#include <iostream> // apenas para erros e transicoes de movimento
 
 std::atomic<bool> running{true};
 void handle_sig(int){ running = false; }
@@ -26,9 +25,6 @@ int main(int argc, char** argv) {
 
     signal(SIGINT, handle_sig);
     signal(SIGTERM, handle_sig);
-
-    MotionBus bus("/tmp/motion_bus");
-
 
     // GPU disponível?
     if (cv::cuda::getCudaEnabledDeviceCount() <= 0) {
@@ -90,14 +86,15 @@ int main(int argc, char** argv) {
         // OBS: isso NÃO baixa o frame; só retorna um contador. Mantido para manter a lógica.
         int64_t nz = cv::cuda::countNonZero(d_mask);
 
-        // lógica de debounce sem prints
+        // lógica de debounce: apenas informa a mudança de estado no próprio processo
         if (!in_motion) {
             if (nz > threshold) {
                 if (++consec_motion >= start_frames) {
                     in_motion = true;
                     consec_motion = 0;
-                                    bus.on();
-}
+                    std::cout << "MOTION_ON frame=" << frame_idx << "\n";
+                    std::cout.flush();
+                }
             } else {
                 consec_motion = 0;
             }
@@ -106,8 +103,9 @@ int main(int argc, char** argv) {
                 if (++consec_idle >= end_frames) {
                     in_motion = false;
                     consec_idle = 0;
-                                    bus.off();
-}
+                    std::cout << "MOTION_OFF frame=" << frame_idx << "\n";
+                    std::cout.flush();
+                }
             } else {
                 consec_idle = 0;
             }
@@ -116,7 +114,10 @@ int main(int argc, char** argv) {
         ++frame_idx;
     }
 
-    if (in_motion) bus.off();
+    if (in_motion) {
+        std::cout << "MOTION_OFF frame=" << frame_idx << "\n";
+        std::cout.flush();
+    }
 
     return 0;
 }
