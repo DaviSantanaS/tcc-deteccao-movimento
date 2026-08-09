@@ -56,7 +56,13 @@ int main(int argc, char** argv) {
         return 3;
     }
 
+    // Um segundo equivalente de frames e reservado para o MOG2 aprender o fundo
+    // antes de permitir transicoes MOTION_ON/OFF.
+    const double warmup_seconds = 1.0;
+    const uint64_t warmup_frames = static_cast<uint64_t>(fps * warmup_seconds + 0.5);
+
     std::cout << "STREAM_FPS fps=" << fps << "\n";
+    std::cout << "MOG2_WARMUP frames=" << warmup_frames << "\n";
     std::cout.flush();
 
     // Subtrator de fundo (GPU)
@@ -96,6 +102,15 @@ int main(int argc, char** argv) {
         // conta non-zero (executa na GPU, retorna um inteiro no host)
         // OBS: isso NÃO baixa o frame; só retorna um contador. Mantido para manter a lógica.
         int64_t nz = cv::cuda::countNonZero(d_mask);
+
+        // Durante o warm-up o modelo de fundo continua aprendendo normalmente,
+        // mas nenhuma transicao de movimento e emitida.
+        if (frame_idx < warmup_frames) {
+            consec_motion = 0;
+            consec_idle = 0;
+            ++frame_idx;
+            continue;
+        }
 
         // lógica de debounce: apenas informa a mudança de estado no próprio processo
         if (!in_motion) {
