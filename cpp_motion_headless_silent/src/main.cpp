@@ -1,4 +1,5 @@
 #include <opencv2/opencv.hpp>
+#include <opencv2/highgui.hpp>
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/cudabgsegm.hpp>
 #include <opencv2/cudaarithm.hpp>
