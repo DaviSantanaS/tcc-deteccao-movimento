@@ -15,9 +15,9 @@ std::atomic<bool> running{true};
 void handle_sig(int){ running = false; }
 
 int main(int argc, char** argv) {
-    // args: <url> [threshold] [start_frames] [end_frames]
+    // args: <url> [threshold_percent] [start_frames] [end_frames]
     std::string url = (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
-    int threshold = (argc > 2) ? std::stoi(argv[2]) : 5000; // pixels
+    double threshold_percent = (argc > 2) ? std::stod(argv[2]) : 1.0;
     int start_frames = (argc > 3) ? std::stoi(argv[3]) : 2;
     int end_frames   = (argc > 4) ? std::stoi(argv[4]) : 3;
     const double mog_lr = 0.01; // learning rate for MOG2
@@ -47,14 +47,31 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    // O FPS passa a vir do proprio stream aberto pelo VideoReader.
+    // Informacoes do formato do stream aberto pelo VideoReader.
     const cv::cudacodec::FormatInfo format = reader->format();
     const double fps = format.fps;
+    const int width = format.width;
+    const int height = format.height;
 
     if (fps <= 0.0) {
         std::cerr << "[fatal] FPS invalido informado pelo stream: " << fps << "\n";
         return 3;
     }
+
+    if (width <= 0 || height <= 0) {
+        std::cerr << "[fatal] Resolucao invalida informada pelo stream: "
+                  << width << "x" << height << "\n";
+        return 4;
+    }
+
+    if (threshold_percent <= 0.0 || threshold_percent > 100.0) {
+        std::cerr << "[fatal] threshold_percent deve estar no intervalo (0, 100]. Valor: "
+                  << threshold_percent << "\n";
+        return 5;
+    }
+
+    const int64_t total_pixels = static_cast<int64_t>(width) * static_cast<int64_t>(height);
+    const double threshold_ratio = threshold_percent / 100.0;
 
     // Um segundo equivalente de frames e reservado para o MOG2 aprender o fundo
     // antes de permitir transicoes MOTION_ON/OFF.
@@ -62,6 +79,8 @@ int main(int argc, char** argv) {
     const uint64_t warmup_frames = static_cast<uint64_t>(fps * warmup_seconds + 0.5);
 
     std::cout << "STREAM_FPS fps=" << fps << "\n";
+    std::cout << "STREAM_RESOLUTION width=" << width << " height=" << height << "\n";
+    std::cout << "MOTION_THRESHOLD percent=" << threshold_percent << "\n";
     std::cout << "MOG2_WARMUP frames=" << warmup_frames << "\n";
     std::cout.flush();
 
@@ -112,9 +131,13 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        // O limiar de movimento agora e uma proporcao da resolucao real do stream.
+        const double foreground_ratio = static_cast<double>(nz) / static_cast<double>(total_pixels);
+        const bool has_motion = foreground_ratio >= threshold_ratio;
+
         // lógica de debounce: apenas informa a mudança de estado no próprio processo
         if (!in_motion) {
-            if (nz > threshold) {
+            if (has_motion) {
                 if (++consec_motion >= start_frames) {
                     in_motion = true;
                     consec_motion = 0;
@@ -125,7 +148,7 @@ int main(int argc, char** argv) {
                 consec_motion = 0;
             }
         } else { // em movimento
-            if (nz <= threshold) {
+            if (!has_motion) {
                 if (++consec_idle >= end_frames) {
                     in_motion = false;
                     consec_idle = 0;
