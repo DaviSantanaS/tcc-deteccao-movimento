@@ -92,7 +92,7 @@ ffmpeg \
   -stream_loop -1 \
   -i "${VIDEO_PATH}" \
   -an \
-  -vf "scale=1920:1080,fps=30" \
+  -vf "scale=1920:1080" \
   -c:v h264_nvenc \
   -preset p4 \
   -b:v 5M \
