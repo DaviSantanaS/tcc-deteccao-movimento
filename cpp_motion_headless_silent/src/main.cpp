@@ -15,12 +15,11 @@ std::atomic<bool> running{true};
 void handle_sig(int){ running = false; }
 
 int main(int argc, char** argv) {
-    // args: <url> [fps] [threshold] [start_frames] [end_frames]
+    // args: <url> [threshold] [start_frames] [end_frames]
     std::string url = (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
-    double fps = (argc > 2) ? std::stod(argv[2]) : 30.0;
-    int threshold = (argc > 3) ? std::stoi(argv[3]) : 5000; // pixels
-    int start_frames = (argc > 4) ? std::stoi(argv[4]) : 2;
-    int end_frames   = (argc > 5) ? std::stoi(argv[5]) : 3;
+    int threshold = (argc > 2) ? std::stoi(argv[2]) : 5000; // pixels
+    int start_frames = (argc > 3) ? std::stoi(argv[3]) : 2;
+    int end_frames   = (argc > 4) ? std::stoi(argv[4]) : 3;
     const double mog_lr = 0.01; // learning rate for MOG2
 
     signal(SIGINT, handle_sig);
@@ -47,6 +46,18 @@ int main(int argc, char** argv) {
         std::cerr << "[fatal] Falha ao abrir NVDEC: " << e.what() << "\n";
         return 2;
     }
+
+    // O FPS passa a vir do proprio stream aberto pelo VideoReader.
+    const cv::cudacodec::FormatInfo format = reader->format();
+    const double fps = format.fps;
+
+    if (fps <= 0.0) {
+        std::cerr << "[fatal] FPS invalido informado pelo stream: " << fps << "\n";
+        return 3;
+    }
+
+    std::cout << "STREAM_FPS fps=" << fps << "\n";
+    std::cout.flush();
 
     // Subtrator de fundo (GPU)
     auto mog2 = cv::cuda::createBackgroundSubtractorMOG2(500, 16.0, false);
