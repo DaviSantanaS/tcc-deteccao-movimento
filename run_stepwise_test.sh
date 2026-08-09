@@ -11,9 +11,15 @@ RUN_DIR="${ROOT_DIR}/.run_stepwise"
 
 MEDIAMTX_PID=""
 FFMPEG_PID=""
+FFPLAY_PID=""
 
 cleanup() {
   set +e
+
+  if [[ -n "${FFPLAY_PID}" ]] && kill -0 "${FFPLAY_PID}" 2>/dev/null; then
+    kill "${FFPLAY_PID}" 2>/dev/null || true
+    wait "${FFPLAY_PID}" 2>/dev/null || true
+  fi
 
   if [[ -n "${FFMPEG_PID}" ]] && kill -0 "${FFMPEG_PID}" 2>/dev/null; then
     kill "${FFMPEG_PID}" 2>/dev/null || true
@@ -36,6 +42,7 @@ require_command() {
 }
 
 require_command ffmpeg
+require_command ffplay
 require_command cmake
 
 if [[ ! -f "${VIDEO_PATH}" ]]; then
@@ -106,6 +113,21 @@ fi
 
 echo "      FFmpeg PID=${FFMPEG_PID}"
 
+# Visualizacao separada apenas para acompanhar o teste.
+# O detector continua lendo e processando o RTSP de forma independente.
+ffplay \
+  -hide_banner \
+  -loglevel warning \
+  -fflags nobuffer \
+  -flags low_delay \
+  -framedrop \
+  -window_title "TCC - video RTSP" \
+  "${RTSP_URL}" \
+  >"${RUN_DIR}/ffplay.log" 2>&1 &
+FFPLAY_PID=$!
+
+echo "      FFplay PID=${FFPLAY_PID}"
+
 printf '\n[3/4] Compilando detector MOG2...\n'
 cmake \
   -S "${ROOT_DIR}/cpp_motion_headless_silent" \
@@ -115,7 +137,7 @@ cmake \
 cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
 printf '\n[4/4] Executando detector...\n'
-echo "      Ctrl+C encerra detector, FFmpeg e MediaMTX."
+echo "      Ctrl+C encerra detector, FFplay, FFmpeg e MediaMTX."
 echo
 
 "${BUILD_DIR}/motion_headless_silent" "${RTSP_URL}"
