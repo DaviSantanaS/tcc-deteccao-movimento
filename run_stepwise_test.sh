@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VIDEO_PATH="${1:-${ROOT_DIR}/video/source_timer.mp4}"
 RTSP_URL="${RTSP_URL:-rtsp://127.0.0.1:8554/video}"
 OPENCV_DIR="${OPENCV_DIR:-/home/davi/Downloads/tcc/opencv/install-cuda125/lib/cmake/opencv4}"
+MEDIAMTX_BIN="${MEDIAMTX_BIN:-/home/davi/Downloads/tcc/mediamtx}"
 BUILD_DIR="${ROOT_DIR}/cpp_motion_headless_silent/build"
 RUN_DIR="${ROOT_DIR}/.run_stepwise"
 
@@ -43,13 +44,9 @@ if [[ ! -f "${VIDEO_PATH}" ]]; then
   exit 1
 fi
 
-if [[ -x "${ROOT_DIR}/mediamtx" ]]; then
-  MEDIAMTX_BIN="${ROOT_DIR}/mediamtx"
-elif command -v mediamtx >/dev/null 2>&1; then
-  MEDIAMTX_BIN="$(command -v mediamtx)"
-else
-  echo "[fatal] MediaMTX nao encontrado." >&2
-  echo "Esperado em ${ROOT_DIR}/mediamtx ou no PATH." >&2
+if [[ ! -x "${MEDIAMTX_BIN}" ]]; then
+  echo "[fatal] MediaMTX nao encontrado ou sem permissao de execucao: ${MEDIAMTX_BIN}" >&2
+  echo "Voce pode sobrescrever o caminho com MEDIAMTX_BIN=/caminho/mediamtx" >&2
   exit 1
 fi
 
