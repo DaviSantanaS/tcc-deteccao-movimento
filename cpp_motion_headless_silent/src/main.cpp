@@ -1,5 +1,4 @@
 #include <opencv2/opencv.hpp>
-#include <opencv2/highgui.hpp>
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/cudabgsegm.hpp>
 #include <opencv2/cudaarithm.hpp>
@@ -59,7 +58,6 @@ int main(int argc, char** argv) {
 
     cv::cuda::GpuMat d_bgr, d_mask;
     cv::cuda::Stream stream;
-    cv::Mat h_frame; // copia no host usada somente para exibicao
 
     bool in_motion = false;
     int consec_motion = 0, consec_idle = 0;
@@ -78,22 +76,17 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        // Todo o processamento de deteccao continua na GPU:
+        // Todo o processamento na GPU:
         mog2->apply(d_bgr, d_mask, mog_lr, stream);                    // MOG2
         cv::cuda::threshold(d_mask, d_mask, 200, 255, cv::THRESH_BINARY, stream); // binariza
         morphOpen->apply(d_mask, d_mask, stream);                      // abertura
         stream.waitForCompletion();
 
         // conta non-zero (executa na GPU, retorna um inteiro no host)
+        // OBS: isso NÃO baixa o frame; só retorna um contador. Mantido para manter a lógica.
         int64_t nz = cv::cuda::countNonZero(d_mask);
 
-        // Apenas para visualizacao nesta etapa de teste:
-        // baixa o frame decodificado da GPU e o exibe em uma janela.
-        d_bgr.download(h_frame);
-        cv::imshow("TCC - video RTSP", h_frame);
-        cv::waitKey(1);
-
-        // logica de debounce: apenas informa a mudanca de estado no proprio processo
+        // lógica de debounce: apenas informa a mudança de estado no próprio processo
         if (!in_motion) {
             if (nz > threshold) {
                 if (++consec_motion >= start_frames) {
@@ -126,6 +119,5 @@ int main(int argc, char** argv) {
         std::cout.flush();
     }
 
-    cv::destroyAllWindows();
     return 0;
 }
