@@ -4,6 +4,7 @@
 #include <opencv2/core/cuda.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
