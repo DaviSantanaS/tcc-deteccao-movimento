@@ -1,32 +1,33 @@
-#include <opencv2/opencv.hpp>
-#include <opencv2/cudacodec.hpp>
-#include <opencv2/cudabgsegm.hpp>
-#include <opencv2/cudaarithm.hpp>
-#include <opencv2/cudafilters.hpp>
+#include "EncodedVideoBuffer.hpp"
+#include "Mog2MotionDetector.hpp"
+#include "VideoStreamReader.hpp"
 
-#include <csignal>
+#include <opencv2/core/cuda.hpp>
+
 #include <atomic>
-#include <thread>
-#include <string>
-#include <vector>
 #include <chrono>
+#include <csignal>
 #include <iostream>
-
-struct EncodedPacket {
-    std::vector<unsigned char> data;
-    std::chrono::steady_clock::time_point received_at;
-    bool has_key_frame = false;
-};
+#include <stdexcept>
+#include <string>
+#include <thread>
 
 std::atomic<bool> keep_running{true};
-void handle_signal(int){ keep_running = false; }
+
+void handle_signal(int) {
+    keep_running = false;
+}
 
 int main(int argc, char** argv) {
     // args: <rtsp_url> [motion_threshold_percent] [motion_start_frames] [motion_end_frames]
-    std::string rtsp_url = (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
-    double motion_threshold_percent = (argc > 2) ? std::stod(argv[2]) : 1.0;
-    int motion_start_frames = (argc > 3) ? std::stoi(argv[3]) : 2;
-    int motion_end_frames   = (argc > 4) ? std::stoi(argv[4]) : 3;
+    const std::string rtsp_url =
+        (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
+    const double motion_threshold_percent =
+        (argc > 2) ? std::stod(argv[2]) : 1.0;
+    const int motion_start_frames =
+        (argc > 3) ? std::stoi(argv[3]) : 2;
+    const int motion_end_frames =
+        (argc > 4) ? std::stoi(argv[4]) : 3;
     const double mog2_learning_rate = 0.01;
 
     signal(SIGINT, handle_signal);
@@ -38,364 +39,136 @@ int main(int argc, char** argv) {
     }
     cv::cuda::setDevice(0);
 
-    cv::cudacodec::VideoReaderInitParams reader_params;
-    reader_params.allowFrameDrop = true;
-    reader_params.rawMode = true;
-    reader_params.udpSource = true;
-
-    std::vector<int> source_params;
-    cv::Ptr<cv::cudacodec::VideoReader> video_reader;
     try {
-        video_reader = cv::cudacodec::createVideoReader(rtsp_url, source_params, reader_params);
-    } catch (const cv::Exception& error) {
-        std::cerr << "[fatal] Falha ao abrir NVDEC: " << error.what() << "\n";
-        return 2;
-    }
+        // Responsável por RTSP, NVDEC, FPS/resolução e pacotes codificados.
+        VideoStreamReader video_reader(rtsp_url);
 
-    const cv::cudacodec::FormatInfo stream_format = video_reader->format();
-    const double stream_fps = stream_format.fps;
-    const int frame_width = stream_format.width;
-    const int frame_height = stream_format.height;
+        // Responsável por MOG2, percentual de foreground, warm-up e debounce.
+        Mog2MotionDetector motion_detector(
+            video_reader.width(),
+            video_reader.height(),
+            video_reader.fps(),
+            motion_threshold_percent,
+            motion_start_frames,
+            motion_end_frames,
+            mog2_learning_rate
+        );
 
-    if (stream_fps <= 0.0) {
-        std::cerr << "[fatal] FPS invalido informado pelo stream: " << stream_fps << "\n";
-        return 3;
-    }
+        // Responsável por acompanhar o GOP e montar o buffer codificado do movimento.
+        EncodedVideoBuffer encoded_video_buffer;
 
-    if (frame_width <= 0 || frame_height <= 0) {
-        std::cerr << "[fatal] Resolucao invalida informada pelo stream: "
-                  << frame_width << "x" << frame_height << "\n";
-        return 4;
-    }
-
-    if (motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
-        std::cerr << "[fatal] motion_threshold_percent deve estar no intervalo (0, 100]. Valor: "
+        std::cout << "STREAM_FPS fps=" << video_reader.fps() << "\n";
+        std::cout << "STREAM_RESOLUTION width=" << video_reader.width()
+                  << " height=" << video_reader.height() << "\n";
+        std::cout << "MOTION_THRESHOLD percent="
                   << motion_threshold_percent << "\n";
-        return 5;
-    }
+        std::cout << "MOG2_WARMUP frames="
+                  << motion_detector.warmupFrameCount() << "\n";
+        std::cout << "MOTION_BUFFER mode=previous_key_frame_to_motion_off\n";
+        std::cout.flush();
 
-    double decoded_frame_index_value = -1.0;
-    if (!video_reader->get(
-            cv::cudacodec::VideoReaderProps::PROP_DECODED_FRAME_IDX,
-            decoded_frame_index_value)) {
-        std::cerr << "[fatal] Nao foi possivel obter PROP_DECODED_FRAME_IDX.\n";
-        return 6;
-    }
+        cv::cuda::Stream cuda_stream;
+        VideoFrameData frame_data;
 
-    double raw_package_base_index_value = -1.0;
-    if (!video_reader->get(
-            cv::cudacodec::VideoReaderProps::PROP_RAW_PACKAGES_BASE_INDEX,
-            raw_package_base_index_value)) {
-        std::cerr << "[fatal] Nao foi possivel obter PROP_RAW_PACKAGES_BASE_INDEX.\n";
-        return 7;
-    }
+        while (keep_running) {
+            bool frame_ready = false;
 
-    const size_t decoded_frame_index =
-        static_cast<size_t>(decoded_frame_index_value);
-    const size_t raw_package_base_index =
-        static_cast<size_t>(raw_package_base_index_value);
+            try {
+                frame_ready = video_reader.read(frame_data, cuda_stream);
+            } catch (const cv::Exception& error) {
+                std::cerr << "[fatal] NVDEC exception: " << error.what() << "\n";
+                break;
+            } catch (const std::exception& error) {
+                std::cerr << "[fatal] " << error.what() << "\n";
+                break;
+            }
 
-    const int64_t frame_pixel_count =
-        static_cast<int64_t>(frame_width) * static_cast<int64_t>(frame_height);
-    const double motion_threshold_ratio = motion_threshold_percent / 100.0;
-
-    const double warmup_seconds = 1.0;
-    const uint64_t warmup_frame_count =
-        static_cast<uint64_t>(stream_fps * warmup_seconds + 0.5);
-
-    std::cout << "STREAM_FPS fps=" << stream_fps << "\n";
-    std::cout << "STREAM_RESOLUTION width=" << frame_width
-              << " height=" << frame_height << "\n";
-    std::cout << "MOTION_THRESHOLD percent=" << motion_threshold_percent << "\n";
-    std::cout << "MOG2_WARMUP frames=" << warmup_frame_count << "\n";
-    std::cout << "MOTION_BUFFER mode=previous_key_frame_to_motion_off\n";
-    std::cout.flush();
-
-    const int mog2_history = 500;
-    const double mog2_variance_threshold = 16.0;
-    auto mog2_detector = cv::cuda::createBackgroundSubtractorMOG2(
-        mog2_history,
-        mog2_variance_threshold,
-        false
-    );
-    mog2_detector->setDetectShadows(false);
-
-    cv::Mat morphology_kernel =
-        cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
-    auto morphology_filter = cv::cuda::createMorphologyFilter(
-        cv::MORPH_OPEN,
-        CV_8UC1,
-        morphology_kernel
-    );
-
-    cv::cuda::GpuMat decoded_frame_gpu;
-    cv::cuda::GpuMat motion_mask_gpu;
-    cv::cuda::Stream cuda_stream;
-
-    // Mantém apenas o GOP corrente: do keyframe mais recente até o frame atual.
-    std::vector<EncodedPacket> current_gop_buffer;
-    size_t current_gop_bytes = 0;
-    bool current_gop_has_key_frame = false;
-    uint64_t current_gop_start_frame = 0;
-
-    // Quando o movimento começa, recebe o GOP corrente e depois os pacotes
-    // seguintes até o MOTION_OFF.
-    std::vector<EncodedPacket> motion_packet_buffer;
-    size_t motion_buffer_bytes = 0;
-    uint64_t motion_buffer_start_frame = 0;
-    uint64_t motion_extra_frames_before_start = 0;
-
-    bool motion_active = false;
-    int motion_frame_count = 0;
-    int idle_frame_count = 0;
-    uint64_t frame_index = 0;
-
-    while (keep_running) {
-        bool frame_grabbed = false;
-        try {
-            frame_grabbed = video_reader->grab(cuda_stream);
-        } catch (const cv::Exception& error) {
-            std::cerr << "[fatal] NVDEC grab exception: " << error.what() << "\n";
-            break;
-        }
-
-        if (!frame_grabbed) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
-        }
-
-        bool frame_retrieved = false;
-        try {
-            frame_retrieved = video_reader->retrieve(
-                decoded_frame_gpu,
-                decoded_frame_index
-            );
-        } catch (const cv::Exception& error) {
-            std::cerr << "[fatal] NVDEC retrieve exception: " << error.what() << "\n";
-            break;
-        }
-
-        if (!frame_retrieved || decoded_frame_gpu.empty()) {
-            std::cerr << "[fatal] Frame decodificado nao foi recuperado.\n";
-            break;
-        }
-
-        double raw_package_count_value = 0.0;
-        if (!video_reader->get(
-                cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-                raw_package_count_value)) {
-            std::cerr << "[fatal] Nao foi possivel obter a quantidade de pacotes codificados.\n";
-            break;
-        }
-
-        const int raw_package_count = static_cast<int>(raw_package_count_value);
-        const auto packet_time = std::chrono::steady_clock::now();
-        std::vector<EncodedPacket> current_encoded_packets;
-        current_encoded_packets.reserve(raw_package_count > 0 ? raw_package_count : 0);
-
-        for (int package_offset = 0; package_offset < raw_package_count; ++package_offset) {
-            const size_t package_index =
-                raw_package_base_index + static_cast<size_t>(package_offset);
-
-            cv::Mat raw_packet;
-            if (!video_reader->retrieve(raw_packet, package_index) || raw_packet.empty()) {
+            if (!frame_ready) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
 
-            double key_frame_value = static_cast<double>(package_index);
-            bool has_key_frame = false;
-            if (video_reader->get(
-                    cv::cudacodec::VideoReaderProps::PROP_LRF_HAS_KEY_FRAME,
-                    key_frame_value)) {
-                has_key_frame = key_frame_value != 0.0;
-            }
-
-            const size_t packet_size_bytes = raw_packet.total() * raw_packet.elemSize();
-
-            EncodedPacket packet;
-            packet.data.assign(
-                raw_packet.data,
-                raw_packet.data + packet_size_bytes
+            // Mantém, em paralelo à detecção, o trecho codificado desde o
+            // keyframe mais recente até o frame atual.
+            encoded_video_buffer.updateCurrentGop(
+                frame_data.encoded_packets,
+                frame_data.frame_index
             );
-            packet.received_at = packet_time;
-            packet.has_key_frame = has_key_frame;
-            current_encoded_packets.push_back(std::move(packet));
-        }
 
-        // Atualiza o GOP corrente usando os keyframes observados no fluxo codificado.
-        // Ao chegar um novo keyframe, o GOP anterior deixa de ser necessário para
-        // iniciar um futuro evento e o buffer passa a começar nesse novo keyframe.
-        for (const EncodedPacket& packet : current_encoded_packets) {
-            if (packet.has_key_frame) {
-                current_gop_buffer.clear();
-                current_gop_bytes = 0;
-                current_gop_has_key_frame = true;
-                current_gop_start_frame = frame_index;
+            const MotionState motion_state = motion_detector.process(
+                frame_data.decoded_frame_gpu,
+                frame_data.frame_index,
+                cuda_stream
+            );
+
+            if (motion_state.started) {
+                const MotionBufferStartInfo start_info =
+                    encoded_video_buffer.startMotion(
+                        frame_data.frame_index,
+                        frame_data.encoded_packets
+                    );
+
+                std::cout << "MOTION_ON frame=" << frame_data.frame_index << "\n";
+                std::cout << "MOTION_BUFFER_START motion_frame="
+                          << start_info.motion_frame
+                          << " start_frame=" << start_info.start_frame
+                          << " extra_frames_before_motion="
+                          << start_info.extra_frames_before_motion
+                          << " gop_packets=" << start_info.gop_packets
+                          << " starts_with_key_frame="
+                          << (start_info.starts_with_key_frame ? 1 : 0)
+                          << "\n";
+                std::cout.flush();
+            } else if (motion_state.active) {
+                // No frame do MOTION_ON o GOP já contém os pacotes atuais;
+                // por isso só anexamos diretamente nos frames seguintes.
+                encoded_video_buffer.appendMotionPackets(
+                    frame_data.encoded_packets
+                );
             }
 
-            if (current_gop_has_key_frame) {
-                current_gop_bytes += packet.data.size();
-                current_gop_buffer.push_back(packet);
-            }
-        }
+            if (motion_state.ended) {
+                const MotionBufferCompleteInfo complete_info =
+                    encoded_video_buffer.finishMotion();
 
-        mog2_detector->apply(
-            decoded_frame_gpu,
-            motion_mask_gpu,
-            mog2_learning_rate,
-            cuda_stream
-        );
-        cv::cuda::threshold(
-            motion_mask_gpu,
-            motion_mask_gpu,
-            200,
-            255,
-            cv::THRESH_BINARY,
-            cuda_stream
-        );
-        morphology_filter->apply(motion_mask_gpu, motion_mask_gpu, cuda_stream);
-        cuda_stream.waitForCompletion();
-
-        const int64_t foreground_pixel_count = cv::cuda::countNonZero(motion_mask_gpu);
-
-        if (frame_index < warmup_frame_count) {
-            motion_frame_count = 0;
-            idle_frame_count = 0;
-            ++frame_index;
-            continue;
-        }
-
-        const double foreground_ratio =
-            static_cast<double>(foreground_pixel_count) /
-            static_cast<double>(frame_pixel_count);
-        const bool motion_detected = foreground_ratio >= motion_threshold_ratio;
-
-        bool motion_started_now = false;
-        bool motion_ended_now = false;
-
-        if (!motion_active) {
-            if (motion_detected) {
-                if (++motion_frame_count >= motion_start_frames) {
-                    motion_active = true;
-                    motion_started_now = true;
-                    motion_frame_count = 0;
-                    idle_frame_count = 0;
-
-                    motion_packet_buffer.clear();
-                    motion_buffer_bytes = 0;
-                    motion_extra_frames_before_start = 0;
-
-                    bool starts_with_key_frame = false;
-
-                    if (current_gop_has_key_frame && !current_gop_buffer.empty()) {
-                        motion_packet_buffer = current_gop_buffer;
-                        motion_buffer_bytes = current_gop_bytes;
-                        motion_buffer_start_frame = current_gop_start_frame;
-                        motion_extra_frames_before_start =
-                            frame_index - current_gop_start_frame;
-                        starts_with_key_frame =
-                            motion_packet_buffer.front().has_key_frame;
-                    } else {
-                        // Caso de inicialização: ainda não apareceu keyframe desde
-                        // que o leitor começou. Preserva o movimento, mas sinaliza
-                        // que o início ainda não é um ponto seguro de decodificação.
-                        motion_buffer_start_frame = frame_index;
-                        for (const EncodedPacket& packet : current_encoded_packets) {
-                            motion_buffer_bytes += packet.data.size();
-                            motion_packet_buffer.push_back(packet);
-                        }
-                    }
-
-                    std::cout << "MOTION_ON frame=" << frame_index << "\n";
-                    std::cout << "MOTION_BUFFER_START motion_frame=" << frame_index
-                              << " start_frame=" << motion_buffer_start_frame
-                              << " extra_frames_before_motion="
-                              << motion_extra_frames_before_start
-                              << " gop_packets=" << motion_packet_buffer.size()
-                              << " starts_with_key_frame="
-                              << (starts_with_key_frame ? 1 : 0) << "\n";
-                    std::cout.flush();
-                }
-            } else {
-                motion_frame_count = 0;
-            }
-        } else {
-            if (!motion_detected) {
-                if (++idle_frame_count >= motion_end_frames) {
-                    motion_active = false;
-                    motion_ended_now = true;
-                    idle_frame_count = 0;
-                    motion_frame_count = 0;
-                }
-            } else {
-                idle_frame_count = 0;
+                std::cout << "MOTION_OFF frame=" << frame_data.frame_index << "\n";
+                std::cout << "MOTION_BUFFER_COMPLETE packets="
+                          << complete_info.packets
+                          << " bytes=" << complete_info.bytes
+                          << " duration_seconds="
+                          << complete_info.duration_seconds
+                          << " key_frames=" << complete_info.key_frames
+                          << " starts_with_key_frame="
+                          << (complete_info.starts_with_key_frame ? 1 : 0)
+                          << " extra_frames_before_motion="
+                          << complete_info.extra_frames_before_motion
+                          << "\n";
+                std::cout.flush();
             }
         }
 
-        // No frame que dispara MOTION_ON, os pacotes atuais já vieram junto com
-        // o GOP copiado acima. Nos frames seguintes, adiciona os pacotes enquanto
-        // o estado de movimento continuar ativo. O frame que dispara MOTION_OFF
-        // não é acrescentado.
-        if (motion_active && !motion_started_now) {
-            for (EncodedPacket& packet : current_encoded_packets) {
-                motion_buffer_bytes += packet.data.size();
-                motion_packet_buffer.push_back(std::move(packet));
-            }
-        }
+        if (motion_detector.isMotionActive()) {
+            const MotionBufferCompleteInfo current_info =
+                encoded_video_buffer.currentMotionInfo();
 
-        if (motion_ended_now) {
-            double motion_buffer_duration_seconds = 0.0;
-            if (motion_packet_buffer.size() >= 2) {
-                motion_buffer_duration_seconds =
-                    std::chrono::duration<double>(
-                        motion_packet_buffer.back().received_at -
-                        motion_packet_buffer.front().received_at
-                    ).count();
-            }
-
-            size_t key_frame_count = 0;
-            for (const EncodedPacket& packet : motion_packet_buffer) {
-                if (packet.has_key_frame) {
-                    ++key_frame_count;
-                }
-            }
-
-            const bool starts_with_key_frame =
-                !motion_packet_buffer.empty() &&
-                motion_packet_buffer.front().has_key_frame;
-
-            std::cout << "MOTION_OFF frame=" << frame_index << "\n";
-            std::cout << "MOTION_BUFFER_COMPLETE packets=" << motion_packet_buffer.size()
-                      << " bytes=" << motion_buffer_bytes
-                      << " duration_seconds=" << motion_buffer_duration_seconds
-                      << " key_frames=" << key_frame_count
+            std::cout << "MOTION_OFF frame="
+                      << video_reader.processedFrameCount() << "\n";
+            std::cout << "MOTION_BUFFER_ON_SHUTDOWN packets="
+                      << current_info.packets
+                      << " bytes=" << current_info.bytes
                       << " starts_with_key_frame="
-                      << (starts_with_key_frame ? 1 : 0)
+                      << (current_info.starts_with_key_frame ? 1 : 0)
                       << " extra_frames_before_motion="
-                      << motion_extra_frames_before_start << "\n";
+                      << current_info.extra_frames_before_motion
+                      << "\n";
             std::cout.flush();
-
-            motion_packet_buffer.clear();
-            motion_buffer_bytes = 0;
-            motion_extra_frames_before_start = 0;
         }
-
-        ++frame_index;
-    }
-
-    if (motion_active) {
-        const bool starts_with_key_frame =
-            !motion_packet_buffer.empty() &&
-            motion_packet_buffer.front().has_key_frame;
-
-        std::cout << "MOTION_OFF frame=" << frame_index << "\n";
-        std::cout << "MOTION_BUFFER_ON_SHUTDOWN packets=" << motion_packet_buffer.size()
-                  << " bytes=" << motion_buffer_bytes
-                  << " starts_with_key_frame="
-                  << (starts_with_key_frame ? 1 : 0)
-                  << " extra_frames_before_motion="
-                  << motion_extra_frames_before_start << "\n";
-        std::cout.flush();
+    } catch (const cv::Exception& error) {
+        std::cerr << "[fatal] Falha ao abrir NVDEC: " << error.what() << "\n";
+        return 2;
+    } catch (const std::exception& error) {
+        std::cerr << "[fatal] " << error.what() << "\n";
+        return 2;
     }
 
     return 0;
