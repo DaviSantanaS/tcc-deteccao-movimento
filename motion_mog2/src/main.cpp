@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
               << " height=" << frame_height << "\n";
     std::cout << "MOTION_THRESHOLD percent=" << motion_threshold_percent << "\n";
     std::cout << "MOG2_WARMUP frames=" << warmup_frame_count << "\n";
-    std::cout << "MOTION_BUFFER mode=motion_on_to_motion_off\n";
+    std::cout << "MOTION_BUFFER mode=previous_key_frame_to_motion_off\n";
     std::cout.flush();
 
     const int mog2_history = 500;
@@ -132,8 +132,18 @@ int main(int argc, char** argv) {
     cv::cuda::GpuMat motion_mask_gpu;
     cv::cuda::Stream cuda_stream;
 
+    // Mantém apenas o GOP corrente: do keyframe mais recente até o frame atual.
+    std::vector<EncodedPacket> current_gop_buffer;
+    size_t current_gop_bytes = 0;
+    bool current_gop_has_key_frame = false;
+    uint64_t current_gop_start_frame = 0;
+
+    // Quando o movimento começa, recebe o GOP corrente e depois os pacotes
+    // seguintes até o MOTION_OFF.
     std::vector<EncodedPacket> motion_packet_buffer;
     size_t motion_buffer_bytes = 0;
+    uint64_t motion_buffer_start_frame = 0;
+    uint64_t motion_extra_frames_before_start = 0;
 
     bool motion_active = false;
     int motion_frame_count = 0;
@@ -212,6 +222,23 @@ int main(int argc, char** argv) {
             current_encoded_packets.push_back(std::move(packet));
         }
 
+        // Atualiza o GOP corrente usando os keyframes observados no fluxo codificado.
+        // Ao chegar um novo keyframe, o GOP anterior deixa de ser necessário para
+        // iniciar um futuro evento e o buffer passa a começar nesse novo keyframe.
+        for (const EncodedPacket& packet : current_encoded_packets) {
+            if (packet.has_key_frame) {
+                current_gop_buffer.clear();
+                current_gop_bytes = 0;
+                current_gop_has_key_frame = true;
+                current_gop_start_frame = frame_index;
+            }
+
+            if (current_gop_has_key_frame) {
+                current_gop_bytes += packet.data.size();
+                current_gop_buffer.push_back(packet);
+            }
+        }
+
         mog2_detector->apply(
             decoded_frame_gpu,
             motion_mask_gpu,
@@ -256,9 +283,37 @@ int main(int argc, char** argv) {
 
                     motion_packet_buffer.clear();
                     motion_buffer_bytes = 0;
+                    motion_extra_frames_before_start = 0;
+
+                    bool starts_with_key_frame = false;
+
+                    if (current_gop_has_key_frame && !current_gop_buffer.empty()) {
+                        motion_packet_buffer = current_gop_buffer;
+                        motion_buffer_bytes = current_gop_bytes;
+                        motion_buffer_start_frame = current_gop_start_frame;
+                        motion_extra_frames_before_start =
+                            frame_index - current_gop_start_frame;
+                        starts_with_key_frame =
+                            motion_packet_buffer.front().has_key_frame;
+                    } else {
+                        // Caso de inicialização: ainda não apareceu keyframe desde
+                        // que o leitor começou. Preserva o movimento, mas sinaliza
+                        // que o início ainda não é um ponto seguro de decodificação.
+                        motion_buffer_start_frame = frame_index;
+                        for (const EncodedPacket& packet : current_encoded_packets) {
+                            motion_buffer_bytes += packet.data.size();
+                            motion_packet_buffer.push_back(packet);
+                        }
+                    }
 
                     std::cout << "MOTION_ON frame=" << frame_index << "\n";
-                    std::cout << "MOTION_BUFFER_START frame=" << frame_index << "\n";
+                    std::cout << "MOTION_BUFFER_START motion_frame=" << frame_index
+                              << " start_frame=" << motion_buffer_start_frame
+                              << " extra_frames_before_motion="
+                              << motion_extra_frames_before_start
+                              << " gop_packets=" << motion_packet_buffer.size()
+                              << " starts_with_key_frame="
+                              << (starts_with_key_frame ? 1 : 0) << "\n";
                     std::cout.flush();
                 }
             } else {
@@ -277,10 +332,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Guarda somente os pacotes pertencentes ao intervalo em que o estado
-        // de movimento está ativo. No frame que dispara MOTION_ON, os pacotes
-        // atuais já entram no buffer. No frame que dispara MOTION_OFF, não entram.
-        if (motion_active || motion_started_now) {
+        // No frame que dispara MOTION_ON, os pacotes atuais já vieram junto com
+        // o GOP copiado acima. Nos frames seguintes, adiciona os pacotes enquanto
+        // o estado de movimento continuar ativo. O frame que dispara MOTION_OFF
+        // não é acrescentado.
+        if (motion_active && !motion_started_now) {
             for (EncodedPacket& packet : current_encoded_packets) {
                 motion_buffer_bytes += packet.data.size();
                 motion_packet_buffer.push_back(std::move(packet));
@@ -304,24 +360,41 @@ int main(int argc, char** argv) {
                 }
             }
 
+            const bool starts_with_key_frame =
+                !motion_packet_buffer.empty() &&
+                motion_packet_buffer.front().has_key_frame;
+
             std::cout << "MOTION_OFF frame=" << frame_index << "\n";
             std::cout << "MOTION_BUFFER_COMPLETE packets=" << motion_packet_buffer.size()
                       << " bytes=" << motion_buffer_bytes
                       << " duration_seconds=" << motion_buffer_duration_seconds
-                      << " key_frames=" << key_frame_count << "\n";
+                      << " key_frames=" << key_frame_count
+                      << " starts_with_key_frame="
+                      << (starts_with_key_frame ? 1 : 0)
+                      << " extra_frames_before_motion="
+                      << motion_extra_frames_before_start << "\n";
             std::cout.flush();
 
             motion_packet_buffer.clear();
             motion_buffer_bytes = 0;
+            motion_extra_frames_before_start = 0;
         }
 
         ++frame_index;
     }
 
     if (motion_active) {
+        const bool starts_with_key_frame =
+            !motion_packet_buffer.empty() &&
+            motion_packet_buffer.front().has_key_frame;
+
         std::cout << "MOTION_OFF frame=" << frame_index << "\n";
         std::cout << "MOTION_BUFFER_ON_SHUTDOWN packets=" << motion_packet_buffer.size()
-                  << " bytes=" << motion_buffer_bytes << "\n";
+                  << " bytes=" << motion_buffer_bytes
+                  << " starts_with_key_frame="
+                  << (starts_with_key_frame ? 1 : 0)
+                  << " extra_frames_before_motion="
+                  << motion_extra_frames_before_start << "\n";
         std::cout.flush();
     }
 
