@@ -11,6 +11,7 @@
 #include <vector>
 #include <deque>
 #include <chrono>
+#include <algorithm>
 #include <iostream>
 
 struct EncodedPacket {
@@ -23,12 +24,14 @@ std::atomic<bool> keep_running{true};
 void handle_signal(int){ keep_running = false; }
 
 int main(int argc, char** argv) {
-    // args: <rtsp_url> [motion_threshold_percent] [motion_start_frames] [motion_end_frames] [buffer_seconds]
+    // args: <rtsp_url> [motion_threshold_percent] [motion_start_frames] [motion_end_frames]
+    //       [pre_event_seconds] [post_event_seconds]
     std::string rtsp_url = (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
     double motion_threshold_percent = (argc > 2) ? std::stod(argv[2]) : 1.0;
     int motion_start_frames = (argc > 3) ? std::stoi(argv[3]) : 2;
     int motion_end_frames   = (argc > 4) ? std::stoi(argv[4]) : 3;
-    double buffer_seconds = (argc > 5) ? std::stod(argv[5]) : 5.0;
+    double pre_event_seconds = (argc > 5) ? std::stod(argv[5]) : 5.0;
+    double post_event_seconds = (argc > 6) ? std::stod(argv[6]) : 5.0;
     const double mog2_learning_rate = 0.01;
 
     signal(SIGINT, handle_signal);
@@ -40,10 +43,16 @@ int main(int argc, char** argv) {
     }
     cv::cuda::setDevice(0);
 
-    if (buffer_seconds <= 0.0) {
-        std::cerr << "[fatal] buffer_seconds deve ser maior que zero. Valor: "
-                  << buffer_seconds << "\n";
+    if (pre_event_seconds <= 0.0) {
+        std::cerr << "[fatal] pre_event_seconds deve ser maior que zero. Valor: "
+                  << pre_event_seconds << "\n";
         return 2;
+    }
+
+    if (post_event_seconds <= 0.0) {
+        std::cerr << "[fatal] post_event_seconds deve ser maior que zero. Valor: "
+                  << post_event_seconds << "\n";
+        return 3;
     }
 
     cv::cudacodec::VideoReaderInitParams reader_params;
@@ -57,7 +66,7 @@ int main(int argc, char** argv) {
         video_reader = cv::cudacodec::createVideoReader(rtsp_url, source_params, reader_params);
     } catch (const cv::Exception& error) {
         std::cerr << "[fatal] Falha ao abrir NVDEC: " << error.what() << "\n";
-        return 3;
+        return 4;
     }
 
     const cv::cudacodec::FormatInfo stream_format = video_reader->format();
@@ -67,19 +76,19 @@ int main(int argc, char** argv) {
 
     if (stream_fps <= 0.0) {
         std::cerr << "[fatal] FPS invalido informado pelo stream: " << stream_fps << "\n";
-        return 4;
+        return 5;
     }
 
     if (frame_width <= 0 || frame_height <= 0) {
         std::cerr << "[fatal] Resolucao invalida informada pelo stream: "
                   << frame_width << "x" << frame_height << "\n";
-        return 5;
+        return 6;
     }
 
     if (motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
         std::cerr << "[fatal] motion_threshold_percent deve estar no intervalo (0, 100]. Valor: "
                   << motion_threshold_percent << "\n";
-        return 6;
+        return 7;
     }
 
     double decoded_frame_index_value = -1.0;
@@ -87,7 +96,7 @@ int main(int argc, char** argv) {
             cv::cudacodec::VideoReaderProps::PROP_DECODED_FRAME_IDX,
             decoded_frame_index_value)) {
         std::cerr << "[fatal] Nao foi possivel obter PROP_DECODED_FRAME_IDX.\n";
-        return 7;
+        return 8;
     }
 
     double raw_package_base_index_value = -1.0;
@@ -95,7 +104,7 @@ int main(int argc, char** argv) {
             cv::cudacodec::VideoReaderProps::PROP_RAW_PACKAGES_BASE_INDEX,
             raw_package_base_index_value)) {
         std::cerr << "[fatal] Nao foi possivel obter PROP_RAW_PACKAGES_BASE_INDEX.\n";
-        return 8;
+        return 9;
     }
 
     const size_t decoded_frame_index =
@@ -116,7 +125,8 @@ int main(int argc, char** argv) {
               << " height=" << frame_height << "\n";
     std::cout << "MOTION_THRESHOLD percent=" << motion_threshold_percent << "\n";
     std::cout << "MOG2_WARMUP frames=" << warmup_frame_count << "\n";
-    std::cout << "ENCODED_BUFFER target_seconds=" << buffer_seconds << "\n";
+    std::cout << "PRE_EVENT_BUFFER target_seconds=" << pre_event_seconds << "\n";
+    std::cout << "POST_EVENT target_seconds=" << post_event_seconds << "\n";
     std::cout.flush();
 
     const int mog2_history = 500;
@@ -140,8 +150,16 @@ int main(int argc, char** argv) {
     cv::cuda::GpuMat motion_mask_gpu;
     cv::cuda::Stream cuda_stream;
 
-    std::deque<EncodedPacket> encoded_packet_buffer;
-    size_t encoded_buffer_bytes = 0;
+    // Buffer circular que mantém apenas os segundos anteriores ao evento.
+    std::deque<EncodedPacket> pre_event_buffer;
+    size_t pre_event_buffer_bytes = 0;
+
+    // Buffer temporário do evento completo: pré-evento + movimento + pós-evento.
+    std::deque<EncodedPacket> event_packet_buffer;
+    size_t event_buffer_bytes = 0;
+    bool event_collecting = false;
+    bool waiting_for_post_event = false;
+    std::chrono::steady_clock::time_point post_event_started_at;
 
     bool motion_active = false;
     int motion_frame_count = 0;
@@ -217,23 +235,31 @@ int main(int argc, char** argv) {
             buffered_packet.received_at = packet_time;
             buffered_packet.has_key_frame = has_key_frame;
 
-            encoded_buffer_bytes += buffered_packet.data.size();
-            encoded_packet_buffer.push_back(std::move(buffered_packet));
+            // Depois que um evento começou, cada novo pacote também pertence ao evento.
+            if (event_collecting) {
+                event_buffer_bytes += buffered_packet.data.size();
+                event_packet_buffer.push_back(buffered_packet);
+            }
+
+            pre_event_buffer_bytes += buffered_packet.data.size();
+            pre_event_buffer.push_back(std::move(buffered_packet));
         }
 
         const auto current_time = std::chrono::steady_clock::now();
-        while (!encoded_packet_buffer.empty()) {
+
+        // Mantém no buffer circular somente a janela de pré-evento configurada.
+        while (!pre_event_buffer.empty()) {
             const double packet_age_seconds =
                 std::chrono::duration<double>(
-                    current_time - encoded_packet_buffer.front().received_at
+                    current_time - pre_event_buffer.front().received_at
                 ).count();
 
-            if (packet_age_seconds <= buffer_seconds) {
+            if (packet_age_seconds <= pre_event_seconds) {
                 break;
             }
 
-            encoded_buffer_bytes -= encoded_packet_buffer.front().data.size();
-            encoded_packet_buffer.pop_front();
+            pre_event_buffer_bytes -= pre_event_buffer.front().data.size();
+            pre_event_buffer.pop_front();
         }
 
         mog2_detector->apply(
@@ -272,27 +298,59 @@ int main(int argc, char** argv) {
                 if (++motion_frame_count >= motion_start_frames) {
                     motion_active = true;
                     motion_frame_count = 0;
-
-                    double buffered_duration_seconds = 0.0;
-                    if (!encoded_packet_buffer.empty()) {
-                        buffered_duration_seconds =
-                            std::chrono::duration<double>(
-                                current_time - encoded_packet_buffer.front().received_at
-                            ).count();
-                    }
-
-                    size_t buffered_key_frame_count = 0;
-                    for (const EncodedPacket& packet : encoded_packet_buffer) {
-                        if (packet.has_key_frame) {
-                            ++buffered_key_frame_count;
-                        }
-                    }
-
                     std::cout << "MOTION_ON frame=" << frame_index << "\n";
-                    std::cout << "ENCODED_BUFFER packets=" << encoded_packet_buffer.size()
-                              << " bytes=" << encoded_buffer_bytes
-                              << " duration_seconds=" << buffered_duration_seconds
-                              << " key_frames=" << buffered_key_frame_count << "\n";
+
+                    if (!event_collecting) {
+                        event_packet_buffer.clear();
+                        event_buffer_bytes = 0;
+
+                        // Começa o evento no primeiro key frame disponível dentro
+                        // da janela de pré-evento, para manter um início decodificável.
+                        auto event_start = std::find_if(
+                            pre_event_buffer.begin(),
+                            pre_event_buffer.end(),
+                            [](const EncodedPacket& packet) {
+                                return packet.has_key_frame;
+                            }
+                        );
+
+                        const bool starts_with_key_frame =
+                            event_start != pre_event_buffer.end();
+
+                        if (!starts_with_key_frame) {
+                            event_start = pre_event_buffer.begin();
+                            std::cout << "EVENT_BUFFER_WARNING no_key_frame_in_pre_event\n";
+                        }
+
+                        for (auto packet_it = event_start;
+                             packet_it != pre_event_buffer.end();
+                             ++packet_it) {
+                            event_buffer_bytes += packet_it->data.size();
+                            event_packet_buffer.push_back(*packet_it);
+                        }
+
+                        event_collecting = true;
+                        waiting_for_post_event = false;
+
+                        double pre_event_duration = 0.0;
+                        if (!event_packet_buffer.empty()) {
+                            pre_event_duration =
+                                std::chrono::duration<double>(
+                                    current_time - event_packet_buffer.front().received_at
+                                ).count();
+                        }
+
+                        std::cout << "EVENT_START pre_event_packets="
+                                  << event_packet_buffer.size()
+                                  << " pre_event_bytes=" << event_buffer_bytes
+                                  << " pre_event_duration_seconds=" << pre_event_duration
+                                  << " starts_with_key_frame="
+                                  << (starts_with_key_frame ? 1 : 0) << "\n";
+                    } else if (waiting_for_post_event) {
+                        waiting_for_post_event = false;
+                        std::cout << "EVENT_CONTINUE reason=motion_resumed_before_post_event_end\n";
+                    }
+
                     std::cout.flush();
                 }
             } else {
@@ -303,11 +361,51 @@ int main(int argc, char** argv) {
                 if (++idle_frame_count >= motion_end_frames) {
                     motion_active = false;
                     idle_frame_count = 0;
+                    waiting_for_post_event = true;
+                    post_event_started_at = current_time;
+
                     std::cout << "MOTION_OFF frame=" << frame_index << "\n";
+                    std::cout << "POST_EVENT_WAIT seconds=" << post_event_seconds << "\n";
                     std::cout.flush();
                 }
             } else {
                 idle_frame_count = 0;
+            }
+        }
+
+        if (event_collecting && waiting_for_post_event && !motion_active) {
+            const double post_event_elapsed =
+                std::chrono::duration<double>(
+                    current_time - post_event_started_at
+                ).count();
+
+            if (post_event_elapsed >= post_event_seconds) {
+                double event_duration_seconds = 0.0;
+                if (event_packet_buffer.size() >= 2) {
+                    event_duration_seconds =
+                        std::chrono::duration<double>(
+                            event_packet_buffer.back().received_at -
+                            event_packet_buffer.front().received_at
+                        ).count();
+                }
+
+                size_t event_key_frame_count = 0;
+                for (const EncodedPacket& packet : event_packet_buffer) {
+                    if (packet.has_key_frame) {
+                        ++event_key_frame_count;
+                    }
+                }
+
+                std::cout << "EVENT_COMPLETE packets=" << event_packet_buffer.size()
+                          << " bytes=" << event_buffer_bytes
+                          << " duration_seconds=" << event_duration_seconds
+                          << " key_frames=" << event_key_frame_count << "\n";
+                std::cout.flush();
+
+                event_packet_buffer.clear();
+                event_buffer_bytes = 0;
+                event_collecting = false;
+                waiting_for_post_event = false;
             }
         }
 
@@ -316,8 +414,13 @@ int main(int argc, char** argv) {
 
     if (motion_active) {
         std::cout << "MOTION_OFF frame=" << frame_index << "\n";
-        std::cout.flush();
     }
 
+    if (event_collecting) {
+        std::cout << "EVENT_BUFFER_ON_SHUTDOWN packets=" << event_packet_buffer.size()
+                  << " bytes=" << event_buffer_bytes << "\n";
+    }
+
+    std::cout.flush();
     return 0;
 }
