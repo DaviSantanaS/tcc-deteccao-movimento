@@ -4,6 +4,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include <stdexcept>
+#include <string>
 
 Mog2MotionDetector::Mog2MotionDetector(
     int frame_width,
