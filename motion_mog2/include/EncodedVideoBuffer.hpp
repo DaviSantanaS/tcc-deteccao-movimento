@@ -43,6 +43,17 @@ public:
 private:
     void startNewGop(uint64_t decoded_frame_index);
     void appendEncodedPacketToCurrentGop(const EncodedPacket& encoded_packet);
+
+    void resetMotionBuffer();
+    bool hasCurrentGopWithKeyFrame() const;
+    void copyCurrentGopToMotionBuffer(uint64_t motion_decoded_frame_index);
+    void startMotionBufferFromCurrentPackets(
+        uint64_t motion_decoded_frame_index,
+        const std::vector<EncodedPacket>& current_encoded_packets
+    );
+    MotionBufferStartInfo buildMotionBufferStartInfo(
+        uint64_t motion_decoded_frame_index
+    ) const;
     MotionBufferCompleteInfo buildCurrentMotionInfo() const;
 
     std::vector<EncodedPacket> current_gop_encoded_packets_;
