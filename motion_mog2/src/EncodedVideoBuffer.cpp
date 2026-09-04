@@ -6,8 +6,8 @@ void EncodedVideoBuffer::updateCurrentGop(
     const std::vector<EncodedPacket>& encoded_packets,
     uint64_t frame_index
 ) {
-    for (const EncodedPacket& packet : encoded_packets) {
-        if (packet.has_key_frame) {
+    for (const EncodedPacket& encoded_packet : encoded_packets) {
+        if (encoded_packet.has_key_frame) {
             current_gop_buffer_.clear();
             current_gop_bytes_ = 0;
             current_gop_has_key_frame_ = true;
@@ -15,8 +15,8 @@ void EncodedVideoBuffer::updateCurrentGop(
         }
 
         if (current_gop_has_key_frame_) {
-            current_gop_bytes_ += packet.data.size();
-            current_gop_buffer_.push_back(packet);
+            current_gop_bytes_ += encoded_packet.data.size();
+            current_gop_buffer_.push_back(encoded_packet);
         }
     }
 }
@@ -40,9 +40,9 @@ MotionBufferStartInfo EncodedVideoBuffer::startMotion(
             motion_frame - current_gop_start_frame_;
     } else {
         motion_buffer_start_frame_ = motion_frame;
-        for (const EncodedPacket& packet : current_encoded_packets) {
-            motion_buffer_bytes_ += packet.data.size();
-            motion_packet_buffer_.push_back(packet);
+        for (const EncodedPacket& encoded_packet : current_encoded_packets) {
+            motion_buffer_bytes_ += encoded_packet.data.size();
+            motion_packet_buffer_.push_back(encoded_packet);
         }
     }
 
@@ -59,9 +59,9 @@ MotionBufferStartInfo EncodedVideoBuffer::startMotion(
 void EncodedVideoBuffer::appendMotionPackets(
     const std::vector<EncodedPacket>& encoded_packets
 ) {
-    for (const EncodedPacket& packet : encoded_packets) {
-        motion_buffer_bytes_ += packet.data.size();
-        motion_packet_buffer_.push_back(packet);
+    for (const EncodedPacket& encoded_packet : encoded_packets) {
+        motion_buffer_bytes_ += encoded_packet.data.size();
+        motion_packet_buffer_.push_back(encoded_packet);
     }
 }
 
@@ -79,8 +79,8 @@ MotionBufferCompleteInfo EncodedVideoBuffer::buildCurrentMotionInfo() const {
             ).count();
     }
 
-    for (const EncodedPacket& packet : motion_packet_buffer_) {
-        if (packet.has_key_frame) {
+    for (const EncodedPacket& encoded_packet : motion_packet_buffer_) {
+        if (encoded_packet.has_key_frame) {
             ++info.key_frames;
         }
     }
