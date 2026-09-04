@@ -18,7 +18,7 @@ struct EncodedPacket {
 struct VideoFrameData {
     cv::cuda::GpuMat decoded_frame_gpu;
     std::vector<EncodedPacket> encoded_packets;
-    uint64_t frame_index = 0;
+    uint64_t decoded_frame_index = 0;
 };
 
 class VideoStreamReader {
@@ -34,11 +34,11 @@ public:
 
 private:
     cv::Ptr<cv::cudacodec::VideoReader> video_reader_;
-    size_t decoded_frame_index_ = 0;
+    size_t decoded_frame_retrieve_index_ = 0;
     size_t encoded_packet_base_index_ = 0;
 
     double stream_fps_ = 0.0;
-    int frame_width_ = 0;
-    int frame_height_ = 0;
-    uint64_t next_frame_index_ = 0;
+    int decoded_frame_width_ = 0;
+    int decoded_frame_height_ = 0;
+    uint64_t next_decoded_frame_index_ = 0;
 };
