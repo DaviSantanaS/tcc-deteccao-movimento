@@ -8,50 +8,51 @@ void EncodedVideoBuffer::updateCurrentGop(
 ) {
     for (const EncodedPacket& encoded_packet : encoded_packets) {
         if (encoded_packet.has_key_frame) {
-            current_gop_buffer_.clear();
-            current_gop_bytes_ = 0;
+            current_gop_encoded_packets_.clear();
+            current_gop_encoded_byte_count_ = 0;
             current_gop_has_key_frame_ = true;
-            current_gop_start_frame_ = decoded_frame_index;
+            current_gop_start_decoded_frame_index_ = decoded_frame_index;
         }
 
         if (current_gop_has_key_frame_) {
-            current_gop_bytes_ += encoded_packet.data.size();
-            current_gop_buffer_.push_back(encoded_packet);
+            current_gop_encoded_byte_count_ += encoded_packet.data.size();
+            current_gop_encoded_packets_.push_back(encoded_packet);
         }
     }
 }
 
 MotionBufferStartInfo EncodedVideoBuffer::startMotion(
-    uint64_t motion_frame,
+    uint64_t motion_decoded_frame_index,
     const std::vector<EncodedPacket>& current_encoded_packets
 ) {
-    motion_packet_buffer_.clear();
-    motion_buffer_bytes_ = 0;
-    motion_extra_frames_before_start_ = 0;
+    motion_encoded_packets_.clear();
+    motion_encoded_byte_count_ = 0;
+    motion_extra_decoded_frames_before_start_ = 0;
 
     MotionBufferStartInfo info;
-    info.motion_frame = motion_frame;
+    info.motion_decoded_frame_index = motion_decoded_frame_index;
 
-    if (current_gop_has_key_frame_ && !current_gop_buffer_.empty()) {
-        motion_packet_buffer_ = current_gop_buffer_;
-        motion_buffer_bytes_ = current_gop_bytes_;
-        motion_buffer_start_frame_ = current_gop_start_frame_;
-        motion_extra_frames_before_start_ =
-            motion_frame - current_gop_start_frame_;
+    if (current_gop_has_key_frame_ && !current_gop_encoded_packets_.empty()) {
+        motion_encoded_packets_ = current_gop_encoded_packets_;
+        motion_encoded_byte_count_ = current_gop_encoded_byte_count_;
+        motion_start_decoded_frame_index_ = current_gop_start_decoded_frame_index_;
+        motion_extra_decoded_frames_before_start_ =
+            motion_decoded_frame_index - current_gop_start_decoded_frame_index_;
     } else {
-        motion_buffer_start_frame_ = motion_frame;
+        motion_start_decoded_frame_index_ = motion_decoded_frame_index;
         for (const EncodedPacket& encoded_packet : current_encoded_packets) {
-            motion_buffer_bytes_ += encoded_packet.data.size();
-            motion_packet_buffer_.push_back(encoded_packet);
+            motion_encoded_byte_count_ += encoded_packet.data.size();
+            motion_encoded_packets_.push_back(encoded_packet);
         }
     }
 
-    info.start_frame = motion_buffer_start_frame_;
-    info.extra_frames_before_motion = motion_extra_frames_before_start_;
-    info.gop_packets = motion_packet_buffer_.size();
+    info.start_decoded_frame_index = motion_start_decoded_frame_index_;
+    info.extra_decoded_frames_before_motion =
+        motion_extra_decoded_frames_before_start_;
+    info.gop_encoded_packet_count = motion_encoded_packets_.size();
     info.starts_with_key_frame =
-        !motion_packet_buffer_.empty() &&
-        motion_packet_buffer_.front().has_key_frame;
+        !motion_encoded_packets_.empty() &&
+        motion_encoded_packets_.front().has_key_frame;
 
     return info;
 }
@@ -60,34 +61,35 @@ void EncodedVideoBuffer::appendMotionPackets(
     const std::vector<EncodedPacket>& encoded_packets
 ) {
     for (const EncodedPacket& encoded_packet : encoded_packets) {
-        motion_buffer_bytes_ += encoded_packet.data.size();
-        motion_packet_buffer_.push_back(encoded_packet);
+        motion_encoded_byte_count_ += encoded_packet.data.size();
+        motion_encoded_packets_.push_back(encoded_packet);
     }
 }
 
 MotionBufferCompleteInfo EncodedVideoBuffer::buildCurrentMotionInfo() const {
     MotionBufferCompleteInfo info;
-    info.packets = motion_packet_buffer_.size();
-    info.bytes = motion_buffer_bytes_;
-    info.extra_frames_before_motion = motion_extra_frames_before_start_;
+    info.encoded_packet_count = motion_encoded_packets_.size();
+    info.encoded_byte_count = motion_encoded_byte_count_;
+    info.extra_decoded_frames_before_motion =
+        motion_extra_decoded_frames_before_start_;
 
-    if (motion_packet_buffer_.size() >= 2) {
+    if (motion_encoded_packets_.size() >= 2) {
         info.duration_seconds =
             std::chrono::duration<double>(
-                motion_packet_buffer_.back().received_at -
-                motion_packet_buffer_.front().received_at
+                motion_encoded_packets_.back().received_at -
+                motion_encoded_packets_.front().received_at
             ).count();
     }
 
-    for (const EncodedPacket& encoded_packet : motion_packet_buffer_) {
+    for (const EncodedPacket& encoded_packet : motion_encoded_packets_) {
         if (encoded_packet.has_key_frame) {
-            ++info.key_frames;
+            ++info.key_frame_count;
         }
     }
 
     info.starts_with_key_frame =
-        !motion_packet_buffer_.empty() &&
-        motion_packet_buffer_.front().has_key_frame;
+        !motion_encoded_packets_.empty() &&
+        motion_encoded_packets_.front().has_key_frame;
 
     return info;
 }
@@ -95,9 +97,9 @@ MotionBufferCompleteInfo EncodedVideoBuffer::buildCurrentMotionInfo() const {
 MotionBufferCompleteInfo EncodedVideoBuffer::finishMotion() {
     MotionBufferCompleteInfo info = buildCurrentMotionInfo();
 
-    motion_packet_buffer_.clear();
-    motion_buffer_bytes_ = 0;
-    motion_extra_frames_before_start_ = 0;
+    motion_encoded_packets_.clear();
+    motion_encoded_byte_count_ = 0;
+    motion_extra_decoded_frames_before_start_ = 0;
 
     return info;
 }
