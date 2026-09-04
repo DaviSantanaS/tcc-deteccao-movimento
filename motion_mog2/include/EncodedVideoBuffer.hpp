@@ -41,6 +41,8 @@ public:
     MotionBufferCompleteInfo currentMotionInfo() const;
 
 private:
+    void startNewGop(uint64_t decoded_frame_index);
+    void appendEncodedPacketToCurrentGop(const EncodedPacket& encoded_packet);
     MotionBufferCompleteInfo buildCurrentMotionInfo() const;
 
     std::vector<EncodedPacket> current_gop_encoded_packets_;
