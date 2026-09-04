@@ -8,17 +8,25 @@ void EncodedVideoBuffer::updateCurrentGop(
 ) {
     for (const EncodedPacket& encoded_packet : encoded_packets) {
         if (encoded_packet.has_key_frame) {
-            current_gop_encoded_packets_.clear();
-            current_gop_encoded_byte_count_ = 0;
-            current_gop_has_key_frame_ = true;
-            current_gop_start_decoded_frame_index_ = decoded_frame_index;
+            startNewGop(decoded_frame_index);
         }
 
-        if (current_gop_has_key_frame_) {
-            current_gop_encoded_byte_count_ += encoded_packet.data.size();
-            current_gop_encoded_packets_.push_back(encoded_packet);
-        }
+        appendEncodedPacketToCurrentGop(encoded_packet);
     }
+}
+
+void EncodedVideoBuffer::startNewGop(uint64_t decoded_frame_index) {
+    current_gop_encoded_packets_.clear();
+    current_gop_encoded_byte_count_ = 0;
+    current_gop_has_key_frame_ = true;
+    current_gop_start_decoded_frame_index_ = decoded_frame_index;
+}
+
+void EncodedVideoBuffer::appendEncodedPacketToCurrentGop(
+    const EncodedPacket& encoded_packet
+) {
+    current_gop_encoded_byte_count_ += encoded_packet.data.size();
+    current_gop_encoded_packets_.push_back(encoded_packet);
 }
 
 MotionBufferStartInfo EncodedVideoBuffer::startMotion(
