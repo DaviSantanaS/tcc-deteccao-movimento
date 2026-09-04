@@ -7,17 +7,17 @@
 #include <string>
 
 Mog2MotionDetector::Mog2MotionDetector(
-    int frame_width,
-    int frame_height,
+    int decoded_frame_width,
+    int decoded_frame_height,
     double stream_fps,
     double motion_threshold_percent,
     int motion_start_frames,
     int motion_end_frames,
     double learning_rate
 ) :
-    frame_pixel_count_(
-        static_cast<int64_t>(frame_width) *
-        static_cast<int64_t>(frame_height)
+    decoded_frame_pixel_count_(
+        static_cast<int64_t>(decoded_frame_width) *
+        static_cast<int64_t>(decoded_frame_height)
     ),
     motion_threshold_ratio_(motion_threshold_percent / 100.0),
     motion_start_frames_(motion_start_frames),
@@ -55,7 +55,7 @@ Mog2MotionDetector::Mog2MotionDetector(
 
 MotionState Mog2MotionDetector::process(
     const cv::cuda::GpuMat& decoded_frame_gpu,
-    uint64_t frame_index,
+    uint64_t decoded_frame_index,
     cv::cuda::Stream& cuda_stream
 ) {
     mog2_detector_->apply(
@@ -87,7 +87,7 @@ MotionState Mog2MotionDetector::process(
 
     MotionState state;
 
-    if (frame_index < warmup_frame_count_) {
+    if (decoded_frame_index < warmup_frame_count_) {
         motion_frame_count_ = 0;
         idle_frame_count_ = 0;
         state.active = motion_active_;
@@ -96,7 +96,7 @@ MotionState Mog2MotionDetector::process(
 
     state.foreground_ratio =
         static_cast<double>(foreground_pixel_count) /
-        static_cast<double>(frame_pixel_count_);
+        static_cast<double>(decoded_frame_pixel_count_);
 
     state.detected =
         state.foreground_ratio >= motion_threshold_ratio_;
