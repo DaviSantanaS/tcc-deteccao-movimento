@@ -4,14 +4,14 @@
 
 void EncodedVideoBuffer::updateCurrentGop(
     const std::vector<EncodedPacket>& encoded_packets,
-    uint64_t frame_index
+    uint64_t decoded_frame_index
 ) {
     for (const EncodedPacket& encoded_packet : encoded_packets) {
         if (encoded_packet.has_key_frame) {
             current_gop_buffer_.clear();
             current_gop_bytes_ = 0;
             current_gop_has_key_frame_ = true;
-            current_gop_start_frame_ = frame_index;
+            current_gop_start_frame_ = decoded_frame_index;
         }
 
         if (current_gop_has_key_frame_) {
