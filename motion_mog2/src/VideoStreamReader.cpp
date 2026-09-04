@@ -7,7 +7,7 @@
 
 VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
     cv::cudacodec::VideoReaderInitParams reader_params;
-    reader_params.allowFrameDrop = true;
+    reader_params.allowFrameDrop = false;
     reader_params.rawMode = true;
     reader_params.udpSource = true;
 
