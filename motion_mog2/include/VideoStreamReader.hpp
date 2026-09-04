@@ -35,7 +35,7 @@ public:
 private:
     cv::Ptr<cv::cudacodec::VideoReader> video_reader_;
     size_t decoded_frame_index_ = 0;
-    size_t raw_package_base_index_ = 0;
+    size_t encoded_packet_base_index_ = 0;
 
     double stream_fps_ = 0.0;
     int frame_width_ = 0;
