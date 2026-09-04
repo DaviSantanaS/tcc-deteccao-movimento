@@ -45,17 +45,17 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
         );
     }
 
-    double raw_package_base_index_value = -1.0;
+    double encoded_packet_base_index_value = -1.0;
     if (!video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_RAW_PACKAGES_BASE_INDEX,
-            raw_package_base_index_value)) {
+            encoded_packet_base_index_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter PROP_RAW_PACKAGES_BASE_INDEX."
         );
     }
 
     decoded_frame_index_ = static_cast<size_t>(decoded_frame_index_value);
-    raw_package_base_index_ = static_cast<size_t>(raw_package_base_index_value);
+    encoded_packet_base_index_ = static_cast<size_t>(encoded_packet_base_index_value);
 }
 
 bool VideoStreamReader::read(
@@ -73,35 +73,36 @@ bool VideoStreamReader::read(
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
 
-    double raw_package_count_value = 0.0;
+    double encoded_packet_count_value = 0.0;
     if (!video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-            raw_package_count_value)) {
+            encoded_packet_count_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter a quantidade de pacotes codificados."
         );
     }
 
-    const int raw_package_count = static_cast<int>(raw_package_count_value);
-    const auto packet_time = std::chrono::steady_clock::now();
+    const int encoded_packet_count = static_cast<int>(encoded_packet_count_value);
+    const auto encoded_packet_time = std::chrono::steady_clock::now();
 
     frame_data.encoded_packets.clear();
     frame_data.encoded_packets.reserve(
-        raw_package_count > 0 ? static_cast<size_t>(raw_package_count) : 0
+        encoded_packet_count > 0 ? static_cast<size_t>(encoded_packet_count) : 0
     );
 
-    for (int package_offset = 0;
-         package_offset < raw_package_count;
-         ++package_offset) {
-        const size_t package_index =
-            raw_package_base_index_ + static_cast<size_t>(package_offset);
+    for (int encoded_packet_offset = 0;
+         encoded_packet_offset < encoded_packet_count;
+         ++encoded_packet_offset) {
+        const size_t encoded_packet_index =
+            encoded_packet_base_index_ + static_cast<size_t>(encoded_packet_offset);
 
-        cv::Mat raw_packet;
-        if (!video_reader_->retrieve(raw_packet, package_index) || raw_packet.empty()) {
+        cv::Mat encoded_packet_data;
+        if (!video_reader_->retrieve(encoded_packet_data, encoded_packet_index) ||
+            encoded_packet_data.empty()) {
             continue;
         }
 
-        double key_frame_value = static_cast<double>(package_index);
+        double key_frame_value = static_cast<double>(encoded_packet_index);
         bool has_key_frame = false;
         if (video_reader_->get(
                 cv::cudacodec::VideoReaderProps::PROP_LRF_HAS_KEY_FRAME,
@@ -109,18 +110,18 @@ bool VideoStreamReader::read(
             has_key_frame = key_frame_value != 0.0;
         }
 
-        const size_t packet_size_bytes =
-            raw_packet.total() * raw_packet.elemSize();
+        const size_t encoded_packet_size_bytes =
+            encoded_packet_data.total() * encoded_packet_data.elemSize();
 
-        EncodedPacket packet;
-        packet.data.assign(
-            raw_packet.data,
-            raw_packet.data + packet_size_bytes
+        EncodedPacket encoded_packet;
+        encoded_packet.data.assign(
+            encoded_packet_data.data,
+            encoded_packet_data.data + encoded_packet_size_bytes
         );
-        packet.received_at = packet_time;
-        packet.has_key_frame = has_key_frame;
+        encoded_packet.received_at = encoded_packet_time;
+        encoded_packet.has_key_frame = has_key_frame;
 
-        frame_data.encoded_packets.push_back(std::move(packet));
+        frame_data.encoded_packets.push_back(std::move(encoded_packet));
     }
 
     frame_data.frame_index = next_frame_index_;
