@@ -20,8 +20,8 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
 
     const cv::cudacodec::FormatInfo stream_format = video_reader_->format();
     stream_fps_ = stream_format.fps;
-    frame_width_ = stream_format.width;
-    frame_height_ = stream_format.height;
+    decoded_frame_width_ = stream_format.width;
+    decoded_frame_height_ = stream_format.height;
 
     if (stream_fps_ <= 0.0) {
         throw std::runtime_error(
@@ -29,17 +29,18 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
         );
     }
 
-    if (frame_width_ <= 0 || frame_height_ <= 0) {
+    if (decoded_frame_width_ <= 0 || decoded_frame_height_ <= 0) {
         throw std::runtime_error(
             "Resolucao invalida informada pelo stream: " +
-            std::to_string(frame_width_) + "x" + std::to_string(frame_height_)
+            std::to_string(decoded_frame_width_) + "x" +
+            std::to_string(decoded_frame_height_)
         );
     }
 
-    double decoded_frame_index_value = -1.0;
+    double decoded_frame_retrieve_index_value = -1.0;
     if (!video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_DECODED_FRAME_IDX,
-            decoded_frame_index_value)) {
+            decoded_frame_retrieve_index_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter PROP_DECODED_FRAME_IDX."
         );
@@ -54,8 +55,10 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
         );
     }
 
-    decoded_frame_index_ = static_cast<size_t>(decoded_frame_index_value);
-    encoded_packet_base_index_ = static_cast<size_t>(encoded_packet_base_index_value);
+    decoded_frame_retrieve_index_ =
+        static_cast<size_t>(decoded_frame_retrieve_index_value);
+    encoded_packet_base_index_ =
+        static_cast<size_t>(encoded_packet_base_index_value);
 }
 
 bool VideoStreamReader::read(
@@ -68,7 +71,7 @@ bool VideoStreamReader::read(
 
     if (!video_reader_->retrieve(
             frame_data.decoded_frame_gpu,
-            decoded_frame_index_) ||
+            decoded_frame_retrieve_index_) ||
         frame_data.decoded_frame_gpu.empty()) {
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
@@ -124,8 +127,8 @@ bool VideoStreamReader::read(
         frame_data.encoded_packets.push_back(std::move(encoded_packet));
     }
 
-    frame_data.frame_index = next_frame_index_;
-    ++next_frame_index_;
+    frame_data.decoded_frame_index = next_decoded_frame_index_;
+    ++next_decoded_frame_index_;
     return true;
 }
 
@@ -134,13 +137,13 @@ double VideoStreamReader::fps() const {
 }
 
 int VideoStreamReader::width() const {
-    return frame_width_;
+    return decoded_frame_width_;
 }
 
 int VideoStreamReader::height() const {
-    return frame_height_;
+    return decoded_frame_height_;
 }
 
 uint64_t VideoStreamReader::processedFrameCount() const {
-    return next_frame_index_;
+    return next_decoded_frame_index_;
 }
