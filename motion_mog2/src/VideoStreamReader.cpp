@@ -62,7 +62,8 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
 }
 
 bool VideoStreamReader::read(
-    VideoFrameData& frame_data,
+    DecodedFrame& decoded_frame,
+    EncodedPacketBatch& encoded_batch,
     cv::cuda::Stream& cuda_stream
 ) {
     if (!video_reader_->grab(cuda_stream)) {
@@ -70,9 +71,9 @@ bool VideoStreamReader::read(
     }
 
     if (!video_reader_->retrieve(
-            frame_data.decoded_frame_gpu,
+            decoded_frame.decoded_frame_gpu,
             decoded_frame_retrieve_index_) ||
-        frame_data.decoded_frame_gpu.empty()) {
+        decoded_frame.decoded_frame_gpu.empty()) {
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
 
@@ -88,8 +89,8 @@ bool VideoStreamReader::read(
     const int encoded_packet_count = static_cast<int>(encoded_packet_count_value);
     const auto encoded_packet_time = std::chrono::steady_clock::now();
 
-    frame_data.encoded_packets.clear();
-    frame_data.encoded_packets.reserve(
+    encoded_batch.encoded_packets.clear();
+    encoded_batch.encoded_packets.reserve(
         encoded_packet_count > 0 ? static_cast<size_t>(encoded_packet_count) : 0
     );
 
@@ -124,10 +125,10 @@ bool VideoStreamReader::read(
         encoded_packet.received_at = encoded_packet_time;
         encoded_packet.has_key_frame = has_key_frame;
 
-        frame_data.encoded_packets.push_back(std::move(encoded_packet));
+        encoded_batch.encoded_packets.push_back(std::move(encoded_packet));
     }
 
-    frame_data.decoded_frame_index = next_decoded_frame_index_;
+    decoded_frame.decoded_frame_index = next_decoded_frame_index_;
     ++next_decoded_frame_index_;
     return true;
 }

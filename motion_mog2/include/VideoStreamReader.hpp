@@ -15,17 +15,24 @@ struct EncodedPacket {
     bool has_key_frame = false;
 };
 
-struct VideoFrameData {
+struct DecodedFrame {
     cv::cuda::GpuMat decoded_frame_gpu;
-    std::vector<EncodedPacket> encoded_packets;
     uint64_t decoded_frame_index = 0;
+};
+
+struct EncodedPacketBatch {
+    std::vector<EncodedPacket> encoded_packets;
 };
 
 class VideoStreamReader {
 public:
     explicit VideoStreamReader(const std::string& rtsp_url);
 
-    bool read(VideoFrameData& frame_data, cv::cuda::Stream& cuda_stream);
+    bool read(
+        DecodedFrame& decoded_frame,
+        EncodedPacketBatch& encoded_batch,
+        cv::cuda::Stream& cuda_stream
+    );
 
     double fps() const;
     int width() const;

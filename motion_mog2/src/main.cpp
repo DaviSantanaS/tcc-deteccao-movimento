@@ -68,13 +68,18 @@ int main(int argc, char** argv) {
         std::cout.flush();
 
         cv::cuda::Stream cuda_stream;
-        VideoFrameData video_frame_data;
+        DecodedFrame decoded_frame;
+        EncodedPacketBatch encoded_batch;
 
         while (keep_running) {
             bool decoded_frame_ready = false;
 
             try {
-                decoded_frame_ready = video_reader.read(video_frame_data, cuda_stream);
+                decoded_frame_ready = video_reader.read(
+                    decoded_frame,
+                    encoded_batch,
+                    cuda_stream
+                );
             } catch (const cv::Exception& error) {
                 std::cerr << "[fatal] NVDEC exception: " << error.what() << "\n";
                 break;
@@ -91,25 +96,25 @@ int main(int argc, char** argv) {
             // Mantém, em paralelo à detecção, o trecho codificado desde o
             // keyframe mais recente até o frame atual.
             encoded_video_buffer.updateCurrentGop(
-                video_frame_data.encoded_packets,
-                video_frame_data.decoded_frame_index
+                encoded_batch.encoded_packets,
+                decoded_frame.decoded_frame_index
             );
 
             const MotionState motion_state = motion_detector.process(
-                video_frame_data.decoded_frame_gpu,
-                video_frame_data.decoded_frame_index,
+                decoded_frame.decoded_frame_gpu,
+                decoded_frame.decoded_frame_index,
                 cuda_stream
             );
 
             if (motion_state.started) {
                 const MotionBufferStartInfo start_info =
                     encoded_video_buffer.startMotion(
-                        video_frame_data.decoded_frame_index,
-                        video_frame_data.encoded_packets
+                        decoded_frame.decoded_frame_index,
+                        encoded_batch.encoded_packets
                     );
 
                 std::cout << "MOTION_ON frame="
-                          << video_frame_data.decoded_frame_index << "\n";
+                          << decoded_frame.decoded_frame_index << "\n";
                 std::cout << "MOTION_BUFFER_START motion_frame="
                           << start_info.motion_decoded_frame_index
                           << " start_frame="
@@ -126,7 +131,7 @@ int main(int argc, char** argv) {
                 // No frame do MOTION_ON o GOP já contém os pacotes atuais;
                 // por isso só anexamos diretamente nos frames seguintes.
                 encoded_video_buffer.appendMotionPackets(
-                    video_frame_data.encoded_packets
+                    encoded_batch.encoded_packets
                 );
             }
 
@@ -135,7 +140,7 @@ int main(int argc, char** argv) {
                     encoded_video_buffer.finishMotion();
 
                 std::cout << "MOTION_OFF frame="
-                          << video_frame_data.decoded_frame_index << "\n";
+                          << decoded_frame.decoded_frame_index << "\n";
                 std::cout << "MOTION_BUFFER_COMPLETE packets="
                           << complete_info.encoded_packet_count
                           << " bytes=" << complete_info.encoded_byte_count
