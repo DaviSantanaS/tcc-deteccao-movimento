@@ -2,8 +2,9 @@
 set -euo pipefail
 
 show_usage() {
-  echo "Uso: bash run_mog2_test.sh [video.mp4] [pre_event_seconds] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]"
-  echo "Exemplo: bash run_mog2_test.sh video/source_timer.mp4 5"
+  echo "Uso: bash run_mog2_test.sh [video-ou-pasta] [pre_event_seconds] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]"
+  echo "Pasta padrao: ${VIDEO_DIR:-${HOME}/Vídeos/tcc}"
+  echo "Exemplo: bash run_mog2_test.sh \"\$HOME/Vídeos/tcc\" 5"
   echo "Padroes: pre-evento=0 s, limiar=1%, inicio=2 frames, fim=3 frames."
   echo "Saida do detector: .run_mog2/motion_mog2.log"
 }
@@ -19,7 +20,8 @@ if (( $# > 5 )); then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VIDEO_PATH="${1:-${ROOT_DIR}/video/source_timer.mp4}"
+VIDEO_DIR="${VIDEO_DIR:-${HOME}/Vídeos/tcc}"
+VIDEO_PATH="${1:-${VIDEO_DIR}}"
 PRE_EVENT_SECONDS="${2-0}"
 MOTION_THRESHOLD_PERCENT="${3-1.0}"
 MOTION_START_FRAMES="${4-2}"
@@ -69,16 +71,60 @@ require_command() {
   fi
 }
 
+select_video_from_directory() {
+  if [[ ! -d "${VIDEO_PATH}" ]]; then
+    return
+  fi
+
+  local -a video_candidates=()
+  local candidate
+  for candidate in "${VIDEO_PATH}"/*; do
+    if [[ ! -f "${candidate}" ]]; then
+      continue
+    fi
+    case "${candidate,,}" in
+      *.mp4|*.mkv|*.avi|*.mov|*.m4v|*.ts|*.webm)
+        video_candidates+=("${candidate}")
+        ;;
+    esac
+  done
+
+  if (( ${#video_candidates[@]} == 0 )); then
+    echo "[fatal] Nenhum video encontrado na pasta: ${VIDEO_PATH}" >&2
+    return 1
+  fi
+
+  if (( ${#video_candidates[@]} == 1 )); then
+    VIDEO_PATH="${video_candidates[0]}"
+    return
+  fi
+
+  local selected_video
+  echo "Escolha o numero do video que deseja usar:" >&2
+  select selected_video in "${video_candidates[@]}"; do
+    if [[ -n "${selected_video}" ]]; then
+      VIDEO_PATH="${selected_video}"
+      return
+    fi
+    echo "Opcao invalida. Informe um dos numeros listados." >&2
+  done
+
+  echo "[fatal] Nenhum video selecionado. Passe um arquivo no primeiro argumento ou escolha um numero." >&2
+  return 1
+}
+
+select_video_from_directory
+
+if [[ ! -f "${VIDEO_PATH}" ]]; then
+  echo "[fatal] Video ou pasta de teste nao encontrado: ${VIDEO_PATH}" >&2
+  show_usage >&2
+  exit 1
+fi
+
 require_command ffmpeg
 require_command ffplay
 require_command cmake
 require_command tee
-
-if [[ ! -f "${VIDEO_PATH}" ]]; then
-  echo "[fatal] Video de teste nao encontrado: ${VIDEO_PATH}" >&2
-  show_usage >&2
-  exit 1
-fi
 
 if [[ ! -x "${MEDIAMTX_BIN}" ]]; then
   echo "[fatal] MediaMTX nao encontrado ou sem permissao de execucao: ${MEDIAMTX_BIN}" >&2

@@ -9,22 +9,43 @@ responsavel por identificar o movimento.
 Na raiz do repositorio:
 
 ```bash
-bash run_mog2_test.sh video/source_timer.mp4 5
+bash run_mog2_test.sh "$HOME/Vídeos/tcc" 5
 ```
 
 O segundo argumento e o tempo de pre-evento em segundos. O valor padrao e zero.
 Use ponto para valores fracionarios, por exemplo `2.5`.
 
+O primeiro argumento aceita um arquivo ou uma pasta. O padrao e `~/Vídeos/tcc`
+(no computador do Davi: `/home/davi/Vídeos/tcc`). Com um unico video na pasta,
+o script o seleciona automaticamente. Com varios, apresenta uma lista numerada
+para escolher. Se a entrada terminar sem uma escolha, o script encerra com erro.
+Uma pasta vazia ou sem formatos reconhecidos tambem produz um erro explicito.
+Os formatos listados sao MP4, MKV, AVI, MOV, M4V, TS e WebM, incluindo extensoes
+em maiusculas. A busca considera os arquivos diretamente dentro da pasta.
+
+Para escolher um arquivo especifico, sem apresentar a lista:
+
+```bash
+bash run_mog2_test.sh "$HOME/Vídeos/tcc/meu video.mp4" 5
+```
+
+`VIDEO_DIR` permite trocar a pasta padrao. O primeiro argumento vazio usa essa
+pasta e permite informar os segundos no segundo argumento:
+
+```bash
+VIDEO_DIR=/outra/pasta bash run_mog2_test.sh "" 5
+```
+
 Todos os argumentos do inicializador:
 
 ```text
-bash run_mog2_test.sh [video.mp4] [pre_event_seconds] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]
+bash run_mog2_test.sh [video-ou-pasta] [pre_event_seconds] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]
 ```
 
 Exemplo com todos os valores explicitos:
 
 ```bash
-bash run_mog2_test.sh video/source_timer.mp4 5 1.0 2 3
+bash run_mog2_test.sh "$HOME/Vídeos/tcc" 5 1.0 2 3
 ```
 
 O script encaminha os argumentos ao executavel nesta ordem:
