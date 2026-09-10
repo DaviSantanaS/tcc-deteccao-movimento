@@ -1,19 +1,14 @@
 #pragma once
 
+#include "EncodedPacket.hpp"
+
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/core/cuda.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
-
-struct EncodedPacket {
-    std::vector<unsigned char> data;
-    std::chrono::steady_clock::time_point received_at;
-    bool has_key_frame = false;
-};
 
 struct DecodedFrame {
     cv::cuda::GpuMat decoded_frame_gpu;

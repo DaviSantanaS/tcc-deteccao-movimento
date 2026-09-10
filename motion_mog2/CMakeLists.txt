@@ -12,6 +12,7 @@ add_executable(
     src/VideoStreamReader.cpp
     src/Mog2MotionDetector.cpp
     src/EncodedVideoBuffer.cpp
+    src/PreEventConfig.cpp
 )
 
 target_include_directories(
@@ -20,3 +21,15 @@ target_include_directories(
 )
 
 target_link_libraries(motion_mog2 PRIVATE ${OpenCV_LIBS})
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(
+        pre_event_tests
+        tests/pre_event_tests.cpp
+        src/EncodedVideoBuffer.cpp
+        src/PreEventConfig.cpp
+    )
+    target_include_directories(pre_event_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME pre_event_tests COMMAND pre_event_tests)
+endif()

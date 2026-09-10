@@ -1,8 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_usage() {
+  echo "Uso: bash run_mog2_test.sh [video.mp4] [pre_event_seconds] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]"
+  echo "Exemplo: bash run_mog2_test.sh video/source_timer.mp4 5"
+  echo "Padroes: pre-evento=0 s, limiar=1%, inicio=2 frames, fim=3 frames."
+  echo "Saida do detector: .run_mog2/motion_mog2.log"
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  show_usage
+  exit 0
+fi
+
+if (( $# > 5 )); then
+  show_usage >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VIDEO_PATH="${1:-${ROOT_DIR}/video/source_timer.mp4}"
+PRE_EVENT_SECONDS="${2-0}"
+MOTION_THRESHOLD_PERCENT="${3-1.0}"
+MOTION_START_FRAMES="${4-2}"
+MOTION_END_FRAMES="${5-3}"
 RTSP_URL="${RTSP_URL:-rtsp://127.0.0.1:8554/video}"
 OPENCV_DIR="${OPENCV_DIR:-/home/davi/Downloads/tcc/opencv/install-cuda125/lib/cmake/opencv4}"
 MEDIAMTX_BIN="${MEDIAMTX_BIN:-/home/davi/Downloads/tcc/mediamtx}"
@@ -32,7 +53,14 @@ cleanup() {
   fi
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ ! "${PRE_EVENT_SECONDS}" =~ ^[+]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$ ]]; then
+  echo "[fatal] Pre-evento deve ser um numero de segundos >= 0 (use ponto decimal)." >&2
+  exit 1
+fi
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -44,10 +72,11 @@ require_command() {
 require_command ffmpeg
 require_command ffplay
 require_command cmake
+require_command tee
 
 if [[ ! -f "${VIDEO_PATH}" ]]; then
   echo "[fatal] Video de teste nao encontrado: ${VIDEO_PATH}" >&2
-  echo "Uso: bash run_mog2_test.sh [caminho-do-video.mp4]" >&2
+  show_usage >&2
   exit 1
 fi
 
@@ -136,6 +165,15 @@ cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
 printf '\n[4/4] Executando detector MOG2...\n'
 echo "      Ctrl+C encerra detector, FFplay, FFmpeg e MediaMTX."
+echo "      pre-evento=${PRE_EVENT_SECONDS} s"
+echo "      limiar=${MOTION_THRESHOLD_PERCENT}% inicio=${MOTION_START_FRAMES} frames fim=${MOTION_END_FRAMES} frames"
+echo "      log=${RUN_DIR}/motion_mog2.log"
 echo
 
-"${BUILD_DIR}/motion_mog2" "${RTSP_URL}"
+"${BUILD_DIR}/motion_mog2" \
+  "${RTSP_URL}" \
+  "${MOTION_THRESHOLD_PERCENT}" \
+  "${MOTION_START_FRAMES}" \
+  "${MOTION_END_FRAMES}" \
+  "${PRE_EVENT_SECONDS}" \
+  2>&1 | tee "${RUN_DIR}/motion_mog2.log"

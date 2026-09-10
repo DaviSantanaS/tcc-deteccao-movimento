@@ -1,5 +1,6 @@
 #include "EncodedVideoBuffer.hpp"
 #include "Mog2MotionDetector.hpp"
+#include "PreEventConfig.hpp"
 #include "VideoStreamReader.hpp"
 
 #include <opencv2/core/cuda.hpp>
@@ -19,29 +20,40 @@ void handle_signal(int) {
 }
 
 int main(int argc, char** argv) {
-    // args: <rtsp_url> [motion_threshold_percent] [motion_start_frames] [motion_end_frames]
-    const std::string rtsp_url =
-        (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
-    const double motion_threshold_percent =
-        (argc > 2) ? std::stod(argv[2]) : 1.0;
-    const int motion_start_frames =
-        (argc > 3) ? std::stoi(argv[3]) : 2;
-    const int motion_end_frames =
-        (argc > 4) ? std::stoi(argv[4]) : 3;
-    const double mog2_learning_rate = 0.01;
+    const bool show_help = argc == 2 &&
+        (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h");
+    if (show_help || argc > 6) {
+        std::cout << "Uso: motion_mog2 [rtsp_url] [motion_threshold_percent] "
+                     "[motion_start_frames] [motion_end_frames] [pre_event_seconds]\n";
+        return show_help ? 0 : 1;
+    }
 
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    if (cv::cuda::getCudaEnabledDeviceCount() <= 0) {
-        std::cerr << "[fatal] Nenhuma GPU CUDA visível.\n";
-        return 1;
-    }
-    cv::cuda::setDevice(0);
-
     try {
+        const std::string rtsp_url =
+            (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
+        const double motion_threshold_percent =
+            (argc > 2) ? std::stod(argv[2]) : 1.0;
+        const int motion_start_frames =
+            (argc > 3) ? std::stoi(argv[3]) : 2;
+        const int motion_end_frames =
+            (argc > 4) ? std::stoi(argv[4]) : 3;
+        const double mog2_learning_rate = 0.01;
+        const double pre_event_seconds =
+            (argc > 5) ? parsePreEventSeconds(argv[5]) : 0.0;
+
+        if (cv::cuda::getCudaEnabledDeviceCount() <= 0) {
+            std::cerr << "[fatal] Nenhuma GPU CUDA visível.\n";
+            return 1;
+        }
+        cv::cuda::setDevice(0);
+
         // Responsável por RTSP, NVDEC, FPS/resolução e pacotes codificados.
         VideoStreamReader video_reader(rtsp_url);
+        const uint64_t pre_event_frame_count =
+            calculatePreEventFrameCount(pre_event_seconds, video_reader.fps());
 
         // Responsável por MOG2, percentual de foreground, warm-up e debounce.
         Mog2MotionDetector motion_detector(
@@ -55,7 +67,7 @@ int main(int argc, char** argv) {
         );
 
         // Responsável por acompanhar o GOP e montar o buffer codificado do movimento.
-        EncodedVideoBuffer encoded_video_buffer;
+        EncodedVideoBuffer encoded_video_buffer(pre_event_frame_count);
 
         std::cout << "STREAM_FPS fps=" << video_reader.fps() << "\n";
         std::cout << "STREAM_RESOLUTION width=" << video_reader.width()
@@ -64,7 +76,13 @@ int main(int argc, char** argv) {
                   << motion_threshold_percent << "\n";
         std::cout << "MOG2_WARMUP frames="
                   << motion_detector.warmupFrameCount() << "\n";
-        std::cout << "MOTION_BUFFER mode=previous_key_frame_to_motion_off\n";
+        std::cout << "PRE_EVENT seconds=" << pre_event_seconds
+                  << " frames=" << pre_event_frame_count
+                  << " reference=decoded_frame_index\n";
+        std::cout << "MOTION_BUFFER mode="
+                  << (pre_event_frame_count > 0
+                      ? "pre_event_key_frame_to_motion_off"
+                      : "previous_key_frame_to_motion_off") << "\n";
         std::cout.flush();
 
         cv::cuda::Stream cuda_stream;
@@ -93,9 +111,7 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            // Mantém, em paralelo à detecção, o trecho codificado desde o
-            // keyframe mais recente até o frame atual.
-            encoded_video_buffer.updateCurrentGop(
+            encoded_video_buffer.updatePreEventBuffer(
                 encoded_batch.encoded_packets,
                 decoded_frame.decoded_frame_index
             );
@@ -125,6 +141,10 @@ int main(int argc, char** argv) {
                           << start_info.gop_encoded_packet_count
                           << " starts_with_key_frame="
                           << (start_info.starts_with_key_frame ? 1 : 0)
+                          << " requested_pre_event_frames="
+                          << start_info.requested_pre_event_frame_count
+                          << " pre_event_history_sufficient="
+                          << (start_info.pre_event_history_sufficient ? 1 : 0)
                           << "\n";
                 std::cout.flush();
             } else if (motion_state.active) {
