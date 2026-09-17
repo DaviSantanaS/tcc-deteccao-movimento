@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+show_usage() {
+  echo "Uso: bash run_mog2_test.sh [video-ou-pasta] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]"
+  echo "Pasta padrao: ${VIDEO_DIR:-${HOME}/Vídeos/tcc}"
+  echo "Exemplo: bash run_mog2_test.sh \"\$HOME/Vídeos/tcc\" 1.0 2 3"
+  echo "Padroes: limiar=1%, inicio=2 frames, fim=3 frames."
+  echo "Saida do detector: .run_mog2/motion_mog2.log"
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  show_usage
+  exit 0
+fi
+
+if (( $# > 4 )); then
+  show_usage >&2
+  exit 1
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VIDEO_PATH="${1:-${ROOT_DIR}/video/source_timer.mp4}"
+VIDEO_DIR="${VIDEO_DIR:-${HOME}/Vídeos/tcc}"
+VIDEO_PATH="${1:-${VIDEO_DIR}}"
+MOTION_THRESHOLD_PERCENT="${2-1.0}"
+MOTION_START_FRAMES="${3-2}"
+MOTION_END_FRAMES="${4-3}"
 RTSP_URL="${RTSP_URL:-rtsp://127.0.0.1:8554/video}"
 OPENCV_DIR="${OPENCV_DIR:-/home/davi/Downloads/tcc/opencv/install-cuda125/lib/cmake/opencv4}"
 MEDIAMTX_BIN="${MEDIAMTX_BIN:-/home/davi/Downloads/tcc/mediamtx}"
@@ -32,7 +54,9 @@ cleanup() {
   fi
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -41,15 +65,60 @@ require_command() {
   fi
 }
 
+select_video_from_directory() {
+  if [[ ! -d "${VIDEO_PATH}" ]]; then
+    return
+  fi
+
+  local -a video_candidates=()
+  local candidate
+  for candidate in "${VIDEO_PATH}"/*; do
+    if [[ ! -f "${candidate}" ]]; then
+      continue
+    fi
+    case "${candidate,,}" in
+      *.mp4|*.mkv|*.avi|*.mov|*.m4v|*.ts|*.webm)
+        video_candidates+=("${candidate}")
+        ;;
+    esac
+  done
+
+  if (( ${#video_candidates[@]} == 0 )); then
+    echo "[fatal] Nenhum video encontrado na pasta: ${VIDEO_PATH}" >&2
+    return 1
+  fi
+
+  if (( ${#video_candidates[@]} == 1 )); then
+    VIDEO_PATH="${video_candidates[0]}"
+    return
+  fi
+
+  local selected_video
+  echo "Escolha o numero do video que deseja usar:" >&2
+  select selected_video in "${video_candidates[@]}"; do
+    if [[ -n "${selected_video}" ]]; then
+      VIDEO_PATH="${selected_video}"
+      return
+    fi
+    echo "Opcao invalida. Informe um dos numeros listados." >&2
+  done
+
+  echo "[fatal] Nenhum video selecionado. Passe um arquivo no primeiro argumento ou escolha um numero." >&2
+  return 1
+}
+
+select_video_from_directory
+
+if [[ ! -f "${VIDEO_PATH}" ]]; then
+  echo "[fatal] Video ou pasta de teste nao encontrado: ${VIDEO_PATH}" >&2
+  show_usage >&2
+  exit 1
+fi
+
 require_command ffmpeg
 require_command ffplay
 require_command cmake
-
-if [[ ! -f "${VIDEO_PATH}" ]]; then
-  echo "[fatal] Video de teste nao encontrado: ${VIDEO_PATH}" >&2
-  echo "Uso: bash run_mog2_test.sh [caminho-do-video.mp4]" >&2
-  exit 1
-fi
+require_command tee
 
 if [[ ! -x "${MEDIAMTX_BIN}" ]]; then
   echo "[fatal] MediaMTX nao encontrado ou sem permissao de execucao: ${MEDIAMTX_BIN}" >&2
@@ -136,6 +205,13 @@ cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
 printf '\n[4/4] Executando detector MOG2...\n'
 echo "      Ctrl+C encerra detector, FFplay, FFmpeg e MediaMTX."
+echo "      limiar=${MOTION_THRESHOLD_PERCENT}% inicio=${MOTION_START_FRAMES} frames fim=${MOTION_END_FRAMES} frames"
+echo "      log=${RUN_DIR}/motion_mog2.log"
 echo
 
-"${BUILD_DIR}/motion_mog2" "${RTSP_URL}"
+"${BUILD_DIR}/motion_mog2" \
+  "${RTSP_URL}" \
+  "${MOTION_THRESHOLD_PERCENT}" \
+  "${MOTION_START_FRAMES}" \
+  "${MOTION_END_FRAMES}" \
+  2>&1 | tee "${RUN_DIR}/motion_mog2.log"
