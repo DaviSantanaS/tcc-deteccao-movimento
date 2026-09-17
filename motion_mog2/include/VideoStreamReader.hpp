@@ -20,7 +20,7 @@ struct DecodedFrame {
     uint64_t decoded_frame_index = 0;
 };
 
-struct EncodedPacketBatch {
+struct EncodedFramePackets {
     std::vector<EncodedPacket> encoded_packets;
 };
 
@@ -30,7 +30,7 @@ public:
 
     bool read(
         DecodedFrame& decoded_frame,
-        EncodedPacketBatch& encoded_batch,
+        EncodedFramePackets& encoded_frame_packets,
         cv::cuda::Stream& cuda_stream
     );
 

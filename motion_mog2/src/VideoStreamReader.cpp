@@ -63,7 +63,7 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
 
 bool VideoStreamReader::read(
     DecodedFrame& decoded_frame,
-    EncodedPacketBatch& encoded_batch,
+    EncodedFramePackets& encoded_frame_packets,
     cv::cuda::Stream& cuda_stream
 ) {
     if (!video_reader_->grab(cuda_stream)) {
@@ -77,32 +77,32 @@ bool VideoStreamReader::read(
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
 
-    double encoded_packet_count_value = 0.0;
+    double encoded_packet_size_value = 0.0;
     if (!video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-            encoded_packet_count_value)) {
+            encoded_packet_size_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter a quantidade de pacotes codificados."
         );
     }
 
-    const int encoded_packet_count = static_cast<int>(encoded_packet_count_value);
+    const int encoded_packet_size = static_cast<int>(encoded_packet_size_value);
     const auto encoded_packet_time = std::chrono::steady_clock::now();
 
-    encoded_batch.encoded_packets.clear();
-    encoded_batch.encoded_packets.reserve(
-        encoded_packet_count > 0 ? static_cast<size_t>(encoded_packet_count) : 0
+    encoded_frame_packets.encoded_packets.clear();
+    encoded_frame_packets.encoded_packets.reserve(
+        encoded_packet_size > 0 ? static_cast<size_t>(encoded_packet_size) : 0
     );
 
     for (int encoded_packet_offset = 0;
-         encoded_packet_offset < encoded_packet_count;
+         encoded_packet_offset < encoded_packet_size;
          ++encoded_packet_offset) {
         const size_t encoded_packet_index =
             encoded_packet_base_index_ + static_cast<size_t>(encoded_packet_offset);
 
-        cv::Mat encoded_packet_data;
-        if (!video_reader_->retrieve(encoded_packet_data, encoded_packet_index) ||
-            encoded_packet_data.empty()) {
+        cv::Mat encoded_packet_cpu;
+        if (!video_reader_->retrieve(encoded_packet_cpu, encoded_packet_index) ||
+            encoded_packet_cpu.empty()) {
             continue;
         }
 
@@ -114,18 +114,18 @@ bool VideoStreamReader::read(
             has_key_frame = key_frame_value != 0.0;
         }
 
-        const size_t encoded_packet_size_bytes =
-            encoded_packet_data.total() * encoded_packet_data.elemSize();
+        const size_t encoded_packet_byte_size =
+            encoded_packet_cpu.total() * encoded_packet_cpu.elemSize();
 
         EncodedPacket encoded_packet;
         encoded_packet.data.assign(
-            encoded_packet_data.data,
-            encoded_packet_data.data + encoded_packet_size_bytes
+            encoded_packet_cpu.data,
+            encoded_packet_cpu.data + encoded_packet_byte_size
         );
         encoded_packet.received_at = encoded_packet_time;
         encoded_packet.has_key_frame = has_key_frame;
 
-        encoded_batch.encoded_packets.push_back(std::move(encoded_packet));
+        encoded_frame_packets.encoded_packets.push_back(std::move(encoded_packet));
     }
 
     decoded_frame.decoded_frame_index = next_decoded_frame_index_;

@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
 
         cv::cuda::Stream cuda_stream;
         DecodedFrame decoded_frame;
-        EncodedPacketBatch encoded_batch;
+        EncodedFramePackets encoded_frame_packets;
 
         while (keep_running) {
             bool decoded_frame_ready = false;
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
             try {
                 decoded_frame_ready = video_reader.read(
                     decoded_frame,
-                    encoded_batch,
+                    encoded_frame_packets,
                     cuda_stream
                 );
             } catch (const cv::Exception& error) {
@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
             // Mantém, em paralelo à detecção, o trecho codificado desde o
             // keyframe mais recente até o frame atual.
             encoded_video_buffer.updateCurrentGop(
-                encoded_batch.encoded_packets,
+                encoded_frame_packets.encoded_packets,
                 decoded_frame.decoded_frame_index
             );
 
@@ -110,7 +110,7 @@ int main(int argc, char** argv) {
                 const MotionBufferStartInfo start_info =
                     encoded_video_buffer.startMotion(
                         decoded_frame.decoded_frame_index,
-                        encoded_batch.encoded_packets
+                        encoded_frame_packets.encoded_packets
                     );
 
                 std::cout << "MOTION_ON frame="
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
                 // No frame do MOTION_ON o GOP já contém os pacotes atuais;
                 // por isso só anexamos diretamente nos frames seguintes.
                 encoded_video_buffer.appendMotionPackets(
-                    encoded_batch.encoded_packets
+                    encoded_frame_packets.encoded_packets
                 );
             }
 
