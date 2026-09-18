@@ -30,16 +30,16 @@ public:
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
 
-    std::vector<AvPacketPtr> takePendingPackets(size_t packet_size);
+    std::vector<AvPacketPtr> takePendingPackets(size_t packet_count);
     std::string lastError() const;
     void requestStop() noexcept;
 
 private:
-    static int interruptCallback(void* opaque);
+    static int interruptCallback(void* callback_context);
 
     void openInput(const std::string& rtsp_url);
-    void initializeFormatInfo();
-    void copyCodecExtraData();
+    void initializeOpenCvFormat();
+    void copyCodecExtraDataFromStream();
     void setLastError(const std::string& message);
     void closeInput() noexcept;
 
@@ -49,12 +49,12 @@ private:
     AvPacketPtr current_packet_;
 
     mutable std::mutex format_mutex_;
-    cv::cudacodec::FormatInfo format_info_;
+    cv::cudacodec::FormatInfo opencv_format_;
     cv::Mat codec_extra_data_;
-    std::vector<uint8_t> parser_packet_bytes_;
+    std::vector<uint8_t> first_parser_packet_bytes_;
     bool first_video_packet_ = true;
 
-    mutable std::mutex packet_mutex_;
+    std::mutex packet_mutex_;
     std::deque<AvPacketPtr> pending_packets_;
 
     mutable std::mutex error_mutex_;

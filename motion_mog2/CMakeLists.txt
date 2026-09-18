@@ -20,6 +20,7 @@ add_executable(
     motion_mog2
     src/main.cpp
     src/FfmpegRawVideoSource.cpp
+    src/FfmpegRawVideoFormat.cpp
     src/VideoStreamReader.cpp
     src/Mog2MotionDetector.cpp
     src/EncodedVideoBuffer.cpp

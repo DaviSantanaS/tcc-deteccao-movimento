@@ -94,32 +94,30 @@ bool VideoStreamReader::read(
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
 
-    double encoded_packet_size_value = 0.0;
+    double encoded_packet_count_value = 0.0;
     if (!video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-            encoded_packet_size_value)) {
+            encoded_packet_count_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter a quantidade de pacotes codificados."
         );
     }
 
-    if (!std::isfinite(encoded_packet_size_value) ||
-        encoded_packet_size_value < 0.0 ||
-        std::floor(encoded_packet_size_value) != encoded_packet_size_value ||
-        encoded_packet_size_value >
+    if (!std::isfinite(encoded_packet_count_value) ||
+        encoded_packet_count_value < 0.0 ||
+        std::floor(encoded_packet_count_value) != encoded_packet_count_value ||
+        encoded_packet_count_value >
             static_cast<double>(std::numeric_limits<size_t>::max())) {
         throw std::runtime_error(
             "Quantidade invalida de AVPackets informada pelo OpenCV."
         );
     }
 
-    const size_t encoded_packet_size =
-        static_cast<size_t>(encoded_packet_size_value);
+    const size_t encoded_packet_count =
+        static_cast<size_t>(encoded_packet_count_value);
 
-    // O OpenCV informa quantos pacotes codificados chegaram desde o grab
-    // anterior. Retiramos a mesma quantidade da fila FIFO de AVPackets.
     encoded_frame_packets.encoded_packets =
-        raw_video_source_->takePendingPackets(encoded_packet_size);
+        raw_video_source_->takePendingPackets(encoded_packet_count);
 
     decoded_frame.decoded_frame_index = next_decoded_frame_index_;
     ++next_decoded_frame_index_;
