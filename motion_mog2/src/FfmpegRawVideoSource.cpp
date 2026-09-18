@@ -43,7 +43,7 @@ cv::cudacodec::ChromaFormat chromaFormatFromPixelFormat(
         return cv::cudacodec::ChromaFormat::YUV420;
     }
 
-    if ((descriptor->flags & AV_PIX_FMT_FLAG_GRAY) != 0) {
+    if (descriptor->nb_components == 1) {
         return cv::cudacodec::ChromaFormat::Monochrome;
     }
 
