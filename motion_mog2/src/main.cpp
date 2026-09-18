@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
                   << motion_threshold_percent << "\n";
         std::cout << "MOG2_WARMUP frames="
                   << motion_detector.warmupFrameCount() << "\n";
+        std::cout << "PACKET_SOURCE type=ffmpeg_avpacket\n";
         std::cout << "MOTION_BUFFER mode=previous_key_frame_to_motion_off\n";
         std::cout.flush();
 

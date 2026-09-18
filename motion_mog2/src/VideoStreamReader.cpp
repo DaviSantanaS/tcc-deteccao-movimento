@@ -2,19 +2,21 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <cmath>
+#include <limits>
 #include <stdexcept>
-#include <utility>
 
 VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
     cv::cudacodec::VideoReaderInitParams reader_params;
     reader_params.allowFrameDrop = false;
     reader_params.rawMode = true;
+    // RTSP e uma fonte ao vivo. Isso desativa o limite de pacotes que o
+    // parser aceita receber enquanto ainda procura o proximo frame.
     reader_params.udpSource = true;
 
-    std::vector<int> source_params;
+    raw_video_source_ = cv::makePtr<FfmpegRawVideoSource>(rtsp_url);
     video_reader_ = cv::cudacodec::createVideoReader(
-        rtsp_url,
-        source_params,
+        raw_video_source_,
         reader_params
     );
 
@@ -46,19 +48,28 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
         );
     }
 
-    double encoded_packet_base_index_value = -1.0;
-    if (!video_reader_->get(
-            cv::cudacodec::VideoReaderProps::PROP_RAW_PACKAGES_BASE_INDEX,
-            encoded_packet_base_index_value)) {
+    if (!std::isfinite(decoded_frame_retrieve_index_value) ||
+        decoded_frame_retrieve_index_value < 0.0 ||
+        std::floor(decoded_frame_retrieve_index_value) !=
+            decoded_frame_retrieve_index_value ||
+        decoded_frame_retrieve_index_value >
+            static_cast<double>(std::numeric_limits<size_t>::max())) {
         throw std::runtime_error(
-            "Nao foi possivel obter PROP_RAW_PACKAGES_BASE_INDEX."
+            "Indice invalido para recuperar o frame decodificado."
         );
     }
 
     decoded_frame_retrieve_index_ =
         static_cast<size_t>(decoded_frame_retrieve_index_value);
-    encoded_packet_base_index_ =
-        static_cast<size_t>(encoded_packet_base_index_value);
+}
+
+VideoStreamReader::~VideoStreamReader() {
+    if (raw_video_source_) {
+        raw_video_source_->requestStop();
+    }
+
+    video_reader_.reset();
+    raw_video_source_.reset();
 }
 
 bool VideoStreamReader::read(
@@ -66,7 +77,13 @@ bool VideoStreamReader::read(
     EncodedFramePackets& encoded_frame_packets,
     cv::cuda::Stream& cuda_stream
 ) {
+    encoded_frame_packets.encoded_packets.clear();
+
     if (!video_reader_->grab(cuda_stream)) {
+        const std::string source_error = raw_video_source_->lastError();
+        if (!source_error.empty()) {
+            throw std::runtime_error(source_error);
+        }
         return false;
     }
 
@@ -86,47 +103,23 @@ bool VideoStreamReader::read(
         );
     }
 
-    const int encoded_packet_size = static_cast<int>(encoded_packet_size_value);
-    const auto encoded_packet_time = std::chrono::steady_clock::now();
-
-    encoded_frame_packets.encoded_packets.clear();
-    encoded_frame_packets.encoded_packets.reserve(
-        encoded_packet_size > 0 ? static_cast<size_t>(encoded_packet_size) : 0
-    );
-
-    for (int encoded_packet_offset = 0;
-         encoded_packet_offset < encoded_packet_size;
-         ++encoded_packet_offset) {
-        const size_t encoded_packet_index =
-            encoded_packet_base_index_ + static_cast<size_t>(encoded_packet_offset);
-
-        cv::Mat encoded_packet_cpu;
-        if (!video_reader_->retrieve(encoded_packet_cpu, encoded_packet_index) ||
-            encoded_packet_cpu.empty()) {
-            continue;
-        }
-
-        double key_frame_value = static_cast<double>(encoded_packet_index);
-        bool has_key_frame = false;
-        if (video_reader_->get(
-                cv::cudacodec::VideoReaderProps::PROP_LRF_HAS_KEY_FRAME,
-                key_frame_value)) {
-            has_key_frame = key_frame_value != 0.0;
-        }
-
-        const size_t encoded_packet_byte_size =
-            encoded_packet_cpu.total() * encoded_packet_cpu.elemSize();
-
-        EncodedPacket encoded_packet;
-        encoded_packet.data.assign(
-            encoded_packet_cpu.data,
-            encoded_packet_cpu.data + encoded_packet_byte_size
+    if (!std::isfinite(encoded_packet_size_value) ||
+        encoded_packet_size_value < 0.0 ||
+        std::floor(encoded_packet_size_value) != encoded_packet_size_value ||
+        encoded_packet_size_value >
+            static_cast<double>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error(
+            "Quantidade invalida de AVPackets informada pelo OpenCV."
         );
-        encoded_packet.received_at = encoded_packet_time;
-        encoded_packet.has_key_frame = has_key_frame;
-
-        encoded_frame_packets.encoded_packets.push_back(std::move(encoded_packet));
     }
+
+    const size_t encoded_packet_size =
+        static_cast<size_t>(encoded_packet_size_value);
+
+    // O OpenCV informa quantos pacotes codificados chegaram desde o grab
+    // anterior. Retiramos a mesma quantidade da fila FIFO de AVPackets.
+    encoded_frame_packets.encoded_packets =
+        raw_video_source_->takePendingPackets(encoded_packet_size);
 
     decoded_frame.decoded_frame_index = next_decoded_frame_index_;
     ++next_decoded_frame_index_;

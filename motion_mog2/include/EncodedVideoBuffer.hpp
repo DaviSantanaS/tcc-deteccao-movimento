@@ -1,6 +1,6 @@
 #pragma once
 
-#include "VideoStreamReader.hpp"
+#include "AvPacket.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -26,42 +26,42 @@ struct MotionBufferCompleteInfo {
 class EncodedVideoBuffer {
 public:
     void updateCurrentGop(
-        const std::vector<EncodedPacket>& encoded_packets,
+        const std::vector<AvPacketPtr>& encoded_packets,
         uint64_t decoded_frame_index
     );
 
     MotionBufferStartInfo startMotion(
         uint64_t motion_decoded_frame_index,
-        const std::vector<EncodedPacket>& current_encoded_packets
+        const std::vector<AvPacketPtr>& current_encoded_packets
     );
 
-    void appendMotionPackets(const std::vector<EncodedPacket>& encoded_packets);
+    void appendMotionPackets(const std::vector<AvPacketPtr>& encoded_packets);
 
     MotionBufferCompleteInfo finishMotion();
     MotionBufferCompleteInfo currentMotionInfo() const;
 
 private:
     void startNewGop(uint64_t decoded_frame_index);
-    void appendEncodedPacketToCurrentGop(const EncodedPacket& encoded_packet);
+    void appendEncodedPacketToCurrentGop(const AVPacket& encoded_packet);
 
     void resetMotionBuffer();
     bool hasCurrentGopWithKeyFrame() const;
     void copyCurrentGopToMotionBuffer(uint64_t motion_decoded_frame_index);
     void startMotionBufferFromCurrentPackets(
         uint64_t motion_decoded_frame_index,
-        const std::vector<EncodedPacket>& current_encoded_packets
+        const std::vector<AvPacketPtr>& current_encoded_packets
     );
     MotionBufferStartInfo buildMotionBufferStartInfo(
         uint64_t motion_decoded_frame_index
     ) const;
     MotionBufferCompleteInfo buildCurrentMotionInfo() const;
 
-    std::vector<EncodedPacket> current_gop_encoded_packets_;
+    std::vector<AvPacketPtr> current_gop_encoded_packets_;
     size_t current_gop_encoded_byte_count_ = 0;
     bool current_gop_has_key_frame_ = false;
     uint64_t current_gop_start_decoded_frame_index_ = 0;
 
-    std::vector<EncodedPacket> motion_encoded_packets_;
+    std::vector<AvPacketPtr> motion_encoded_packets_;
     size_t motion_encoded_byte_count_ = 0;
     uint64_t motion_start_decoded_frame_index_ = 0;
     uint64_t motion_extra_decoded_frames_before_start_ = 0;
