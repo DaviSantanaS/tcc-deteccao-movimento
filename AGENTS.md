@@ -38,6 +38,14 @@ O objetivo principal não é produzir código rapidamente. O objetivo é permiti
 
 Não entregue uma implementação grande para ser estudada posteriormente.
 
+## Modo padrão de edição
+
+- Por padrão, Davi cria e altera os arquivos manualmente.
+- O agente deve informar o arquivo, o ponto de inserção e somente o menor trecho necessário.
+- O agente não deve criar nem editar arquivos, salvo quando Davi pedir explicitamente aquela alteração específica.
+- Depois da edição manual, o agente deve revisar o diff antes da compilação.
+- Quando o ciclo abaixo disser “implementar”, o comportamento padrão é orientar Davi a digitar a implementação.
+
 ## Regra principal
 
 Implemente somente um método ou uma pequena unidade conceitual por etapa.
