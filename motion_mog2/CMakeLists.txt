@@ -5,31 +5,47 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenCV 4.5 REQUIRED)
+find_package(PkgConfig REQUIRED)
+
+pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec)
 
 add_executable(
-    motion_mog2
-    src/main.cpp
-    src/VideoStreamReader.cpp
-    src/Mog2MotionDetector.cpp
-    src/EncodedVideoBuffer.cpp
-    src/PreEventConfig.cpp
+        motion_mog2
+        src/main.cpp
+        src/VideoStreamReader.cpp
+        src/Mog2MotionDetector.cpp
+        src/EncodedVideoBuffer.cpp
+        src/PreEventConfig.cpp
+        src/AvPacket.cpp
 )
 
 target_include_directories(
-    motion_mog2
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+        motion_mog2
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(motion_mog2 PRIVATE ${OpenCV_LIBS})
+target_link_libraries(
+        motion_mog2
+        PRIVATE
+        ${OpenCV_LIBS}
+        PkgConfig::LIBAVCODEC
+)
 
 include(CTest)
+
 if(BUILD_TESTING)
     add_executable(
-        pre_event_tests
-        tests/pre_event_tests.cpp
-        src/EncodedVideoBuffer.cpp
-        src/PreEventConfig.cpp
+            pre_event_tests
+            tests/pre_event_tests.cpp
+            src/EncodedVideoBuffer.cpp
+            src/PreEventConfig.cpp
+            tests/av_packet_tests.cpp
     )
-    target_include_directories(pre_event_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+    target_include_directories(
+            pre_event_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
     add_test(NAME pre_event_tests COMMAND pre_event_tests)
 endif()
