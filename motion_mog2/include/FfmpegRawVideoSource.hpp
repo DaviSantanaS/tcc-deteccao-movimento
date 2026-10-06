@@ -15,6 +15,7 @@ class FfmpegRawVideoSource {
 public:
     explicit FfmpegRawVideoSource(const std::string& input_url);
 
+    cv::cudacodec::FormatInfo format() const;
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;

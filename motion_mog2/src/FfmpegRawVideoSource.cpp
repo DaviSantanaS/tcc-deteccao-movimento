@@ -119,3 +119,7 @@ void FfmpegRawVideoSource::initializeOpenCvFormat() {
     );
     video_format.fps = av_q2d(frame_rate);
 }
+
+cv::cudacodec::FormatInfo FfmpegRawVideoSource::format() const {
+    return video_format;
+}
