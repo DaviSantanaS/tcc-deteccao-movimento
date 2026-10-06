@@ -6,6 +6,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include <opencv2/cudacodec.hpp>
 
 #include <memory>
 #include <string>
@@ -29,10 +30,12 @@ private:
         std::unique_ptr<AVFormatContext, AvFormatContextDeleter>;
 
     void openInput(const std::string& input_url);
+    void initializeOpenCvFormat();
 
     AvFormatContextPtr video_source_context;
     AvPacketPtr current_encoded_frame_packet;
     AVStream* encoded_video_stream = nullptr;
     int encoded_video_stream_index = -1;
+    cv::cudacodec::FormatInfo video_format;
 
 };

@@ -3,6 +3,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
+#include <libavutil/rational.h>
 }
 
 #include <stdexcept>
@@ -27,6 +28,7 @@ void FfmpegRawVideoSource::AvFormatContextDeleter::operator()(
 FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_url)
     : current_encoded_frame_packet(allocateAvPacket()) {
     openInput(input_url);
+    initializeOpenCvFormat();
 }
 
 void FfmpegRawVideoSource::openInput(const std::string& input_url) {
@@ -74,4 +76,46 @@ void FfmpegRawVideoSource::openInput(const std::string& input_url) {
         input_format_context->streams[selected_video_stream_index];
     encoded_video_stream_index = selected_video_stream_index;
     video_source_context = std::move(input_format_context);
+}
+
+void FfmpegRawVideoSource::initializeOpenCvFormat() {
+    if (encoded_video_stream == nullptr ||
+        encoded_video_stream->codecpar == nullptr) {
+        throw std::runtime_error(
+            "O stream de video nao possui parametros de codec."
+        );
+    }
+
+    const AVCodecID codec_id = encoded_video_stream->codecpar->codec_id;
+    if (codec_id != AV_CODEC_ID_H264) {
+        throw std::runtime_error(
+            "Codec de video nao suportado: " +
+            std::string(avcodec_get_name(codec_id))
+        );
+    }
+
+    video_format.codec = cv::cudacodec::Codec::H264;
+    const AVCodecParameters* codec_parameters =
+    encoded_video_stream->codecpar;
+
+    if (codec_parameters->width <= 0 || codec_parameters->height <= 0) {
+        throw std::runtime_error("Resolucao invalida informada pelo stream.");
+    }
+
+    const AVRational frame_rate = av_guess_frame_rate(
+        video_source_context.get(),
+        encoded_video_stream,
+        nullptr
+    );
+
+    if (frame_rate.num <= 0 || frame_rate.den <= 0) {
+        throw std::runtime_error("Nao foi possivel determinar o FPS do stream.");
+    }
+
+    video_format.width = codec_parameters->width;
+    video_format.height = codec_parameters->height;
+    video_format.displayArea = cv::Rect(
+        0, 0, video_format.width, video_format.height
+    );
+    video_format.fps = av_q2d(frame_rate);
 }
