@@ -6,6 +6,7 @@ extern "C" {
 #include <libavutil/rational.h>
 }
 
+#include <cstring>
 #include <stdexcept>
 #include <utility>
 
@@ -29,6 +30,7 @@ FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_url)
     : current_encoded_frame_packet(allocateAvPacket()) {
     openInput(input_url);
     initializeOpenCvFormat();
+    copyCodecExtraDataFromStream();
 }
 
 void FfmpegRawVideoSource::openInput(const std::string& input_url) {
@@ -122,4 +124,26 @@ void FfmpegRawVideoSource::initializeOpenCvFormat() {
 
 cv::cudacodec::FormatInfo FfmpegRawVideoSource::format() const {
     return video_format;
+}
+
+void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
+    const AVCodecParameters* codec_parameters =
+        encoded_video_stream->codecpar;
+
+    if (codec_parameters->extradata == nullptr ||
+        codec_parameters->extradata_size <= 0) {
+        video_codec_extra_data.release();
+        return;
+    }
+
+    video_codec_extra_data.create(
+        1,
+        codec_parameters->extradata_size,
+        CV_8UC1
+    );
+    std::memcpy(
+        video_codec_extra_data.data,
+        codec_parameters->extradata,
+        static_cast<size_t>(codec_parameters->extradata_size)
+    );
 }

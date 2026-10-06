@@ -32,11 +32,13 @@ private:
 
     void openInput(const std::string& input_url);
     void initializeOpenCvFormat();
+    void copyCodecExtraDataFromStream();
 
     AvFormatContextPtr video_source_context;
     AvPacketPtr current_encoded_frame_packet;
     AVStream* encoded_video_stream = nullptr;
     int encoded_video_stream_index = -1;
     cv::cudacodec::FormatInfo video_format;
+    cv::Mat video_codec_extra_data;
 
 };
