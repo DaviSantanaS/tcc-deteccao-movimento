@@ -151,3 +151,50 @@ void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
 void FfmpegRawVideoSource::getExtraData(cv::Mat& extra_data) const {
     video_codec_extra_data.copyTo(extra_data);
 }
+
+bool FfmpegRawVideoSource::getNextPacket(
+    unsigned char** encoded_frame_data,
+    std::size_t* encoded_frame_size
+) {
+    if (encoded_frame_data == nullptr || encoded_frame_size == nullptr) {
+        return false;
+    }
+
+    *encoded_frame_data = nullptr;
+    *encoded_frame_size = 0;
+    av_packet_unref(current_encoded_frame_packet.get());
+
+    while (true) {
+        const int packet_read_status = av_read_frame(
+            video_source_context.get(),
+            current_encoded_frame_packet.get()
+        );
+
+        if (packet_read_status == AVERROR(EAGAIN)) {
+            continue;
+        }
+
+        if (packet_read_status < 0) {
+            return false;
+        }
+
+        if (current_encoded_frame_packet->stream_index != encoded_video_stream_index ||
+            current_encoded_frame_packet->data == nullptr ||
+            current_encoded_frame_packet->size <= 0) {
+            av_packet_unref(current_encoded_frame_packet.get());
+            continue;
+        }
+
+        current_encoded_frame_packet->time_base = encoded_video_stream->time_base;
+
+        AvPacketPtr pending_packet = cloneAvPacket(*current_encoded_frame_packet);
+        {
+            std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
+            encoded_frames_packets_buffer.push_back(std::move(pending_packet));
+        }
+
+        *encoded_frame_data = current_encoded_frame_packet->data;
+        *encoded_frame_size = static_cast<std::size_t>(current_encoded_frame_packet->size);
+        return true;
+    }
+}

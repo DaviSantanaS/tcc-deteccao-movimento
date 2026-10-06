@@ -8,7 +8,10 @@ extern "C" {
 
 #include <opencv2/cudacodec.hpp>
 
+#include <cstddef>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 
 class FfmpegRawVideoSource {
@@ -17,6 +20,7 @@ public:
 
     cv::cudacodec::FormatInfo format() const;
     void getExtraData(cv::Mat& extra_data) const;
+    bool getNextPacket(unsigned char** data, std::size_t* size);
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;
@@ -42,4 +46,6 @@ private:
     cv::cudacodec::FormatInfo video_format;
     cv::Mat video_codec_extra_data;
 
+    std::mutex encoded_frames_packets_buffer_mutex;
+    std::deque<AvPacketPtr> encoded_frames_packets_buffer;
 };
