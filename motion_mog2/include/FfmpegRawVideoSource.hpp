@@ -16,6 +16,7 @@ public:
     explicit FfmpegRawVideoSource(const std::string& input_url);
 
     cv::cudacodec::FormatInfo format() const;
+    void getExtraData(cv::Mat& extra_data) const;
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;

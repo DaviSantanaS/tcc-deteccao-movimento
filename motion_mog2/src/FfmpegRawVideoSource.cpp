@@ -147,3 +147,7 @@ void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
         static_cast<size_t>(codec_parameters->extradata_size)
     );
 }
+
+void FfmpegRawVideoSource::getExtraData(cv::Mat& extra_data) const {
+    video_codec_extra_data.copyTo(extra_data);
+}
