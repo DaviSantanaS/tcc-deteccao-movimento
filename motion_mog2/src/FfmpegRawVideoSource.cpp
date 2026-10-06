@@ -198,3 +198,27 @@ bool FfmpegRawVideoSource::getNextPacket(
         return true;
     }
 }
+
+std::vector<AvPacketPtr> FfmpegRawVideoSource::takePendingPackets(
+    std::size_t packet_count
+) {
+    std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
+
+    if (encoded_frames_packets_buffer.size() < packet_count) {
+        throw std::runtime_error(
+            "Fila de AVPacket dessincronizada: esperados " +
+            std::to_string(packet_count) + ", disponiveis " +
+            std::to_string(encoded_frames_packets_buffer.size()) + "."
+        );
+    }
+
+    std::vector<AvPacketPtr> packets;
+    packets.reserve(packet_count);
+
+    for (std::size_t index = 0; index < packet_count; ++index) {
+        packets.push_back(std::move(encoded_frames_packets_buffer.front()));
+        encoded_frames_packets_buffer.pop_front();
+    }
+
+    return packets;
+}

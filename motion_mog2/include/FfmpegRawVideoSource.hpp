@@ -13,6 +13,7 @@ extern "C" {
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 class FfmpegRawVideoSource {
 public:
@@ -21,6 +22,7 @@ public:
     cv::cudacodec::FormatInfo format() const;
     void getExtraData(cv::Mat& extra_data) const;
     bool getNextPacket(unsigned char** data, std::size_t* size);
+    std::vector<AvPacketPtr> takePendingPackets(std::size_t packet_count);
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;
