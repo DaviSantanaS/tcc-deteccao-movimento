@@ -15,3 +15,13 @@ AvPacketPtr allocateAvPacket() {
 
     return packet;
 }
+
+AvPacketPtr cloneAvPacket(const AVPacket& source) {
+    AvPacketPtr packet{av_packet_clone(&source)};
+
+    if (!packet) {
+        throw std::bad_alloc{};
+    }
+
+    return packet;
+}

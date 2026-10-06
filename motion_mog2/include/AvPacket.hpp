@@ -13,3 +13,4 @@ struct AvPacketDeleter {
 using AvPacketPtr = std::unique_ptr<AVPacket, AvPacketDeleter>;
 
 [[nodiscard]] AvPacketPtr allocateAvPacket();
+[[nodiscard]] AvPacketPtr cloneAvPacket(const AVPacket& source);
