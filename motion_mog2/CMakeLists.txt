@@ -143,4 +143,28 @@ if(BUILD_TESTING)
             PkgConfig::LIBAVUTIL
     )
 
+    add_executable(
+            ffmpeg_encoded_video_packets_tests
+            tests/ffmpeg_encoded_video_packets_tests.cpp
+            src/AvBitstreamFilter.cpp
+            src/FfmpegRawVideoSource.cpp
+            src/AvPacket.cpp
+            src/AvCodecParameters.cpp
+            src/VideoStreamParameters.cpp
+    )
+
+    target_include_directories(
+            ffmpeg_encoded_video_packets_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            ffmpeg_encoded_video_packets_tests
+            PRIVATE
+            ${OpenCV_LIBS}
+            PkgConfig::LIBAVCODEC
+            PkgConfig::LIBAVFORMAT
+            PkgConfig::LIBAVUTIL
+    )
+
 endif()

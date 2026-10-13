@@ -284,3 +284,12 @@ std::vector<AvPacketPtr> FfmpegRawVideoSource::dequeueEncodedPackets(
 
     return packets;
 }
+
+EncodedVideoPackets FfmpegRawVideoSource::takePacketsWithStreamParameters(
+    std::size_t packet_count
+) {
+    return {
+        dequeueEncodedPackets(packet_count),
+        video_stream_parameters
+    };
+}

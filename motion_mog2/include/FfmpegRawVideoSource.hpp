@@ -2,6 +2,7 @@
 
 #include "AvBitstreamFilter.hpp"
 #include "AvPacket.hpp"
+#include "EncodedVideoPackets.hpp"
 #include "VideoStreamParameters.hpp"
 
 extern "C" {
@@ -22,14 +23,14 @@ public:
     explicit FfmpegRawVideoSource(const std::string& input_url);
 
     cv::cudacodec::FormatInfo format() const override;
+    void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
     void getExtraData(cv::Mat& extra_data) const override;
     bool getNextPacket(unsigned char** data, std::size_t* size) override;
-    void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
     bool lastPacketContainsKeyFrame() const override;
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
     std::vector<AvPacketPtr> dequeueEncodedPackets(std::size_t packet_count);
-
+    EncodedVideoPackets takePacketsWithStreamParameters(std::size_t packet_count);
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
