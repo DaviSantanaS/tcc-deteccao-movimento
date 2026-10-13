@@ -26,6 +26,7 @@ public:
     bool getNextPacket(unsigned char** data, std::size_t* size);
     void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format);
     bool lastPacketContainsKeyFrame() const;
+    bool get(int property_id, double& property_value) const;
     std::vector<AvPacketPtr> takePendingPackets(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;

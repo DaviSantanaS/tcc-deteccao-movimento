@@ -157,6 +157,11 @@ bool FfmpegRawVideoSource::lastPacketContainsKeyFrame() const {
     return (current_encoded_frame_packet->flags & AV_PKT_FLAG_KEY) != 0;
 }
 
+bool FfmpegRawVideoSource::get(int, double& property_value) const {
+    property_value = 0.0;
+    return false;
+}
+
 void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
     const AVCodecParameters* codec_parameters =
         encoded_video_stream->codecpar;
