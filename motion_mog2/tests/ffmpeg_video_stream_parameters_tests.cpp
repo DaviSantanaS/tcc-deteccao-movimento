@@ -65,6 +65,37 @@ int main(int argc, char** argv) {
             if (!std::isfinite(video_format.fps) || video_format.fps <= 0.0) {
                 throw std::runtime_error("O FFmpeg deve fornecer um FPS inicial finito e positivo.");
             }
+            const std::array<double, 5> invalid_frame_rates{
+                std::numeric_limits<double>::quiet_NaN(),
+                std::numeric_limits<double>::infinity(),
+                -std::numeric_limits<double>::infinity(),
+                0.0,
+                -1.0
+            };
+            auto decoder_video_format = video_format;
+            decoder_video_format.width += 16;
+            decoder_video_format.valid = false;
+            for (const double invalid_fps : invalid_frame_rates) {
+                decoder_video_format.fps = invalid_fps;
+                video_source.updateFormat(decoder_video_format);
+                const auto updated_format = video_source.format();
+                if (!std::isfinite(updated_format.fps) || updated_format.fps != video_format.fps ||
+                    updated_format.width != decoder_video_format.width ||
+                    updated_format.height != decoder_video_format.height || !updated_format.valid) {
+                    throw std::runtime_error("Um FPS invalido deve preservar o anterior sem impedir a atualizacao do formato.");
+                }
+            }
+
+            decoder_video_format.fps = 30.0;
+            video_source.updateFormat(decoder_video_format);
+            if (video_source.format().fps != 30.0) {
+                throw std::runtime_error("Um novo FPS finito e positivo deve ser aceito.");
+            }
+            decoder_video_format.fps = std::numeric_limits<double>::quiet_NaN();
+            video_source.updateFormat(decoder_video_format);
+            if (video_source.format().fps != 30.0) {
+                throw std::runtime_error("O fallback deve preservar o ultimo FPS valido, nao somente o inicial.");
+            }
         }
 
         if (video_stream_parameters_lifetime.expired() || codec_parameters_lifetime.expired()) {
@@ -94,6 +125,7 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "PASS: configuracao unica da fonte, preservada apos seu fechamento e liberada ao final.\n";
+        std::cout << "PASS: updateFormat preserva FPS validos, aceita uma nova taxa e atualiza os demais campos.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

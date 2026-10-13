@@ -139,6 +139,20 @@ cv::cudacodec::FormatInfo FfmpegRawVideoSource::format() const {
     return video_format;
 }
 
+void FfmpegRawVideoSource::updateFormat(
+    const cv::cudacodec::FormatInfo& updated_video_format
+) {
+    const double previous_stream_fps = video_format.fps;
+
+    video_format = updated_video_format;
+
+    if (!std::isfinite(video_format.fps) || video_format.fps <= 0.0) {
+        video_format.fps = previous_stream_fps;
+    }
+
+    video_format.valid = true;
+}
+
 void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
     const AVCodecParameters* codec_parameters =
         encoded_video_stream->codecpar;

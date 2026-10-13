@@ -24,6 +24,7 @@ public:
     cv::cudacodec::FormatInfo format() const;
     void getExtraData(cv::Mat& extra_data) const;
     bool getNextPacket(unsigned char** data, std::size_t* size);
+    void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format);
     std::vector<AvPacketPtr> takePendingPackets(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
