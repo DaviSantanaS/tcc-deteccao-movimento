@@ -14,3 +14,7 @@ using AvCodecParametersPtr =
     std::unique_ptr<AVCodecParameters, AvCodecParametersDeleter>;
 
 [[nodiscard]] AvCodecParametersPtr allocateAvCodecParameters();
+
+[[nodiscard]] AvCodecParametersPtr cloneAvCodecParameters(
+    const AVCodecParameters& source_codec_parameters
+);
