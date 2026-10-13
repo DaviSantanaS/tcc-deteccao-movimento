@@ -129,3 +129,47 @@ void writeMp4Header(
         );
     }
 }
+
+void writeMp4Packet(
+    AVFormatContext& mp4_output_context,
+    AVPacket& encoded_packet
+) {
+    if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
+        std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||
+        mp4_output_context.iformat != nullptr || mp4_output_context.nb_streams != 1 ||
+        !mp4_output_context.streams || !mp4_output_context.streams[0] ||
+        !mp4_output_context.pb || !mp4_output_context.pb->write_flag ||
+        mp4_output_context.pb->error < 0) {
+        throw std::invalid_argument("A saida deve ser MP4 com uma stream e I/O de escrita sem erro anterior.");
+    }
+
+    const AVStream& video_output_stream = *mp4_output_context.streams[0];
+    if (!video_output_stream.codecpar ||
+        video_output_stream.codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
+        video_output_stream.codecpar->codec_id != AV_CODEC_ID_H264 ||
+        video_output_stream.time_base.num <= 0 || video_output_stream.time_base.den <= 0) {
+        throw std::invalid_argument("A stream de saida deve ser video H.264 com base de tempo positiva.");
+    }
+    if (!encoded_packet.buf || !encoded_packet.data || encoded_packet.size <= 0 ||
+        encoded_packet.stream_index != video_output_stream.index ||
+        encoded_packet.time_base.num <= 0 || encoded_packet.time_base.den <= 0 ||
+        av_cmp_q(encoded_packet.time_base, video_output_stream.time_base) != 0 ||
+        encoded_packet.pts == AV_NOPTS_VALUE || encoded_packet.dts == AV_NOPTS_VALUE ||
+        encoded_packet.duration < 0) {
+        throw std::invalid_argument("O pacote deve ter dados refcountados e timestamps preparados para a stream de saida.");
+    }
+
+    const int packet_write_result = av_interleaved_write_frame(
+        &mp4_output_context, &encoded_packet
+    );
+    if (packet_write_result < 0) {
+        throw std::runtime_error(
+            "Nao foi possivel escrever o pacote MP4: erro " + std::to_string(packet_write_result)
+        );
+    }
+    if (mp4_output_context.pb->error < 0) {
+        throw std::runtime_error(
+            "O I/O falhou ao escrever o pacote MP4: erro " + std::to_string(mp4_output_context.pb->error)
+        );
+    }
+}

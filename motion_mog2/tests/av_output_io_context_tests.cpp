@@ -11,7 +11,6 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -21,10 +20,8 @@
 extern "C" {
 #include <libavcodec/defs.h>
 #include <libavutil/avutil.h>
-#include <libavutil/buffer.h>
 #include <libavutil/error.h>
 #include <libavutil/macros.h>
-#include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 }
 
@@ -356,7 +353,205 @@ int main() {
             const std::string expected_packet_contents{
                 reinterpret_cast<const char*>(synthetic_avcc_payload), sizeof(synthetic_avcc_payload)
             };
+            const auto create_prepared_packet = [&](const AVStream& output_stream) {
+                auto packet = allocateAvPacket();
+                if (av_new_packet(packet.get(), static_cast<int>(sizeof(synthetic_avcc_payload))) < 0) {
+                    throw std::runtime_error("Nao foi possivel alocar os bytes do pacote de teste.");
+                }
+                std::copy(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload), packet->data);
+                packet->pts = 90000;
+                packet->dts = 90000;
+                packet->duration = 3000;
+                packet->flags = AV_PKT_FLAG_KEY;
+                prepareEncodedPacketForOutput(
+                    *packet, header_video_stream_parameters.packet_timestamp_time_base,
+                    output_stream.time_base, output_stream.index
+                );
+                return packet;
+            };
+            const auto expect_packet_precondition_rejection = [](AVFormatContext& context, AVPacket& packet) {
+                const AVPacket previous_packet = packet;
+                const std::string previous_bytes = packet.data && packet.size > 0
+                    ? std::string(reinterpret_cast<const char*>(packet.data), packet.size)
+                    : std::string{};
+                AVIOContext* previous_io_context = context.pb;
+                const auto previous_io_position = context.pb ? avio_tell(context.pb) : 0;
+                bool rejected = false;
+                try {
+                    writeMp4Packet(context, packet);
+                } catch (const std::invalid_argument&) {
+                    rejected = true;
+                }
+                if (!rejected || packet.buf != previous_packet.buf || packet.data != previous_packet.data ||
+                    packet.size != previous_packet.size || packet.pts != previous_packet.pts ||
+                    packet.dts != previous_packet.dts || packet.duration != previous_packet.duration ||
+                    packet.time_base.num != previous_packet.time_base.num ||
+                    packet.time_base.den != previous_packet.time_base.den ||
+                    packet.stream_index != previous_packet.stream_index || packet.pos != previous_packet.pos ||
+                    packet.flags != previous_packet.flags ||
+                    (!previous_bytes.empty() &&
+                     previous_bytes != std::string(reinterpret_cast<const char*>(packet.data), packet.size)) ||
+                    context.pb != previous_io_context ||
+                    (context.pb && avio_tell(context.pb) != previous_io_position)) {
+                    throw std::runtime_error("Uma precondicao invalida deve preservar o pacote e nao escrever na saida.");
+                }
+            };
+
+            const auto single_packet_path = test_directory.path() / "single-packet-partial.mp4";
+            {
+                auto packet_io_context = openOutputFile(single_packet_path);
+                {
+                    auto packet_format_context = create_video_output_context();
+                    writeMp4Header(*packet_format_context, packet_io_context);
+                    AVStream& output_stream = *packet_format_context->streams[0];
+                    auto prepared_packet = create_prepared_packet(output_stream);
+
+                    auto context_without_header = create_video_output_context();
+                    expect_packet_precondition_rejection(*context_without_header, *prepared_packet);
+                    auto context_without_stream = allocateMp4OutputContext();
+                    expect_packet_precondition_rejection(*context_without_stream, *prepared_packet);
+
+                    AVFormatContext* allocated_non_mp4_context = nullptr;
+                    const int non_mp4_allocation_result = avformat_alloc_output_context2(
+                        &allocated_non_mp4_context, nullptr, "matroska", nullptr
+                    );
+                    AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
+                    if (non_mp4_allocation_result < 0 || !non_mp4_context) {
+                        throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o pacote.");
+                    }
+                    expect_packet_precondition_rejection(*non_mp4_context, *prepared_packet);
+
+                    const int original_write_flag = packet_io_context->write_flag;
+                    packet_io_context->write_flag = 0;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_io_context->write_flag = original_write_flag;
+                    packet_io_context->error = AVERROR(EIO);
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_io_context->error = 0;
+                    output_stream.codecpar->codec_id = AV_CODEC_ID_HEVC;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    output_stream.codecpar->codec_id = AV_CODEC_ID_H264;
+                    const AVRational output_time_base = output_stream.time_base;
+                    output_stream.time_base.num = 0;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    output_stream.time_base = output_time_base;
+
+                    auto empty_packet = allocateAvPacket();
+                    expect_packet_precondition_rejection(*packet_format_context, *empty_packet);
+                    auto non_refcounted_packet = allocateAvPacket();
+                    unsigned char non_refcounted_payload[sizeof(synthetic_avcc_payload)];
+                    std::copy(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload),
+                              non_refcounted_payload);
+                    non_refcounted_packet->data = non_refcounted_payload;
+                    non_refcounted_packet->size = sizeof(non_refcounted_payload);
+                    non_refcounted_packet->pts = 90000;
+                    non_refcounted_packet->dts = 90000;
+                    prepareEncodedPacketForOutput(
+                        *non_refcounted_packet, header_video_stream_parameters.packet_timestamp_time_base,
+                        output_time_base, output_stream.index
+                    );
+                    expect_packet_precondition_rejection(*packet_format_context, *non_refcounted_packet);
+
+                    unsigned char* original_data = prepared_packet->data;
+                    prepared_packet->data = nullptr;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    prepared_packet->data = original_data;
+                    const int original_size = prepared_packet->size;
+                    prepared_packet->size = 0;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    prepared_packet->size = original_size;
+                    prepared_packet->stream_index = output_stream.index + 1;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    prepared_packet->stream_index = output_stream.index;
+                    const AVRational invalid_packet_time_bases[]{
+                        {0, 1}, {-1, 1}, {1, 0}, {1, -1},
+                        {output_time_base.num * 2, output_time_base.den}
+                    };
+                    for (const AVRational invalid_packet_time_base : invalid_packet_time_bases) {
+                        prepared_packet->time_base = invalid_packet_time_base;
+                        expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    }
+                    prepared_packet->time_base = output_time_base;
+                    const auto original_pts = prepared_packet->pts;
+                    const auto original_dts = prepared_packet->dts;
+                    const auto original_duration = prepared_packet->duration;
+                    prepared_packet->pts = AV_NOPTS_VALUE;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    prepared_packet->pts = original_pts;
+                    prepared_packet->dts = AV_NOPTS_VALUE;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    prepared_packet->dts = original_dts;
+                    prepared_packet->duration = -1;
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    prepared_packet->duration = original_duration;
+
+                    AVPacket* owned_packet = prepared_packet.get();
+                    prepared_packet->time_base = {output_time_base.num * 2, output_time_base.den * 2};
+                    writeMp4Packet(*packet_format_context, *prepared_packet);
+                    if (!prepared_packet || prepared_packet.get() != owned_packet ||
+                        prepared_packet->buf || prepared_packet->data || prepared_packet->size != 0 ||
+                        prepared_packet->pts != AV_NOPTS_VALUE || prepared_packet->dts != AV_NOPTS_VALUE) {
+                        throw std::runtime_error("A escrita deve consumir os dados e preservar o proprietario do AVPacket vazio.");
+                    }
+                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    avio_flush(packet_io_context.get());
+                    if (packet_io_context->error < 0) {
+                        throw std::runtime_error("O flush exclusivo do teste nao conseguiu escrever os bytes do pacote.");
+                    }
+                }
+                if (!packet_io_context || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    throw std::runtime_error("Liberar o contexto apos escrever o pacote nao deve fechar o I/O emprestado.");
+                }
+            }
+            const std::string single_packet_contents = readFileContents(single_packet_path);
+            const auto mdat_position = single_packet_contents.find("mdat");
+            if (single_packet_contents.size() < 8 || single_packet_contents.compare(4, 4, "ftyp") != 0 ||
+                mdat_position == std::string::npos ||
+                single_packet_contents.find(expected_packet_contents, mdat_position + 4) == std::string::npos ||
+                openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("A saida parcial deve conter os bytes do pacote no mdat sem descritores restantes.");
+            }
+
+            {
+                auto failed_packet_io_context = openOutputFile(test_directory.path() / "failed-packet-partial.mp4");
+                auto failed_packet_format_context = create_video_output_context();
+                writeMp4Header(*failed_packet_format_context, failed_packet_io_context);
+                auto failed_packet = create_prepared_packet(*failed_packet_format_context->streams[0]);
+                AVPacket* owned_failed_packet = failed_packet.get();
+                failed_packet->pts = 0;
+                failed_packet->dts = 1;
+                bool packet_failure_reported = false;
+                try {
+                    writeMp4Packet(*failed_packet_format_context, *failed_packet);
+                } catch (const std::runtime_error& error) {
+                    packet_failure_reported = std::string(error.what()).find("erro -") != std::string::npos;
+                }
+                if (!packet_failure_reported || !failed_packet || failed_packet.get() != owned_failed_packet ||
+                    failed_packet->buf || failed_packet->data || failed_packet->size != 0 ||
+                    failed_packet->pts != AV_NOPTS_VALUE || failed_packet->dts != AV_NOPTS_VALUE ||
+                    failed_packet_format_context->pb != failed_packet_io_context.get()) {
+                    throw std::runtime_error("Um erro real do FFmpeg deve ser informado com dados consumidos e AVPacket ainda possuido.");
+                }
+                failed_packet_format_context.reset();
+                if (!failed_packet_io_context || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    throw std::runtime_error("O contexto com erro de pacote deve ser descartado antes de fechar o I/O.");
+                }
+            }
+            if (openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("O teste de erro de pacote nao deve deixar descritores abertos.");
+            }
         }
+        if (std::filesystem::exists(test_directory_path)) {
+            throw std::runtime_error("A pasta temporaria do teste nao foi removida: " + test_directory_path.string());
+        }
+        std::cout << "PASS: abertura local absoluta, relativa e UTF-8; bytes sinteticos preservados apos fechar.\n";
+        std::cout << "PASS: transferencia de posse, reset, escopo e proprietario vazio sem descritores restantes.\n";
+        std::cout << "PASS: arquivos existentes, diretorios, links e caminhos invalidos recusados sem sobrescrita.\n";
+        std::cout << "PASS: pai inexistente causa erro FFmpeg; pasta temporaria propria removida.\n";
+        std::cout << "PASS: cabecalho MP4 com ftyp, I/O emprestado e base de tempo positiva, sem pacotes ou trailer.\n";
+        std::cout << "PASS: precondicoes e segunda chamada rejeitadas; erro real do muxer tratado com descarte seguro.\n";
+        std::cout << "PASS: pacote AVCC sintetico escrito no mdat; dados consumidos e AVPacket ainda possuido, sem trailer.\n";
+        std::cout << "PASS: pacotes invalidos preservados; erro real de timestamps consome dados sem vazar descritores.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;
