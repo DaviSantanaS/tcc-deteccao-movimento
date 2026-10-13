@@ -97,4 +97,24 @@ if(BUILD_TESTING)
 
     add_test(NAME video_stream_parameters_tests COMMAND video_stream_parameters_tests)
 
+    add_executable(
+            encoded_video_packets_tests
+            tests/encoded_video_packets_tests.cpp
+            src/AvPacket.cpp
+            src/AvCodecParameters.cpp
+            src/VideoStreamParameters.cpp
+    )
+
+    target_include_directories(
+            encoded_video_packets_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            encoded_video_packets_tests
+            PRIVATE PkgConfig::LIBAVCODEC
+    )
+
+    add_test(NAME encoded_video_packets_tests COMMAND encoded_video_packets_tests)
+
 endif()
