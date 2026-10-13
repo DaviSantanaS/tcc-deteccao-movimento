@@ -8,6 +8,8 @@ find_package(OpenCV 4.5 REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec)
+pkg_check_modules(LIBAVFORMAT REQUIRED IMPORTED_TARGET libavformat)
+pkg_check_modules(LIBAVUTIL REQUIRED IMPORTED_TARGET libavutil)
 
 add_executable(
         motion_mog2
@@ -29,23 +31,29 @@ target_link_libraries(
         PRIVATE
         ${OpenCV_LIBS}
         PkgConfig::LIBAVCODEC
+        PkgConfig::LIBAVFORMAT
+        PkgConfig::LIBAVUTIL
 )
 
 include(CTest)
 
 if(BUILD_TESTING)
     add_executable(
-            pre_event_tests
-            tests/pre_event_tests.cpp
-            src/EncodedVideoBuffer.cpp
-            src/PreEventConfig.cpp
+            av_packet_tests
             tests/av_packet_tests.cpp
+            src/AvPacket.cpp
     )
 
     target_include_directories(
-            pre_event_tests
+            av_packet_tests
             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
 
-    add_test(NAME pre_event_tests COMMAND pre_event_tests)
+    target_link_libraries(
+            av_packet_tests
+            PRIVATE PkgConfig::LIBAVCODEC
+    )
+
+    add_test(NAME av_packet_tests COMMAND av_packet_tests)
+
 endif()
