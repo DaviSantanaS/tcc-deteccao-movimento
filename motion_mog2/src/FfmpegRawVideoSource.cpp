@@ -162,6 +162,11 @@ bool FfmpegRawVideoSource::get(int, double& property_value) const {
     return false;
 }
 
+int FfmpegRawVideoSource::getFirstFrameIdx() const {
+    // A entrada RTSP do MVP nao faz seek.
+    return 0;
+}
+
 void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
     const AVCodecParameters* codec_parameters =
         encoded_video_stream->codecpar;
