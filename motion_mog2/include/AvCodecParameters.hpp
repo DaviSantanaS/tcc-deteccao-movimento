@@ -12,3 +12,5 @@ struct AvCodecParametersDeleter {
 
 using AvCodecParametersPtr =
     std::unique_ptr<AVCodecParameters, AvCodecParametersDeleter>;
+
+[[nodiscard]] AvCodecParametersPtr allocateAvCodecParameters();

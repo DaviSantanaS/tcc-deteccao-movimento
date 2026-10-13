@@ -19,6 +19,7 @@ add_executable(
         src/EncodedVideoBuffer.cpp
         src/PreEventConfig.cpp
         src/AvPacket.cpp
+        src/AvCodecParameters.cpp
 )
 
 target_include_directories(
@@ -55,5 +56,25 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME av_packet_tests COMMAND av_packet_tests)
+
+    add_executable(
+            av_codec_parameters_tests
+            tests/av_codec_parameters_tests.cpp
+            src/AvCodecParameters.cpp
+    )
+
+    target_include_directories(
+            av_codec_parameters_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            av_codec_parameters_tests
+            PRIVATE
+            PkgConfig::LIBAVCODEC
+            PkgConfig::LIBAVUTIL
+    )
+
+    add_test(NAME av_codec_parameters_tests COMMAND av_codec_parameters_tests)
 
 endif()
