@@ -17,17 +17,17 @@ extern "C" {
 #include <string>
 #include <vector>
 
-class FfmpegRawVideoSource {
+class FfmpegRawVideoSource : public cv::cudacodec::RawVideoSource {
 public:
     explicit FfmpegRawVideoSource(const std::string& input_url);
 
-    cv::cudacodec::FormatInfo format() const;
-    void getExtraData(cv::Mat& extra_data) const;
-    bool getNextPacket(unsigned char** data, std::size_t* size);
-    void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format);
-    bool lastPacketContainsKeyFrame() const;
-    bool get(int property_id, double& property_value) const;
-    int getFirstFrameIdx() const;
+    cv::cudacodec::FormatInfo format() const override;
+    void getExtraData(cv::Mat& extra_data) const override;
+    bool getNextPacket(unsigned char** data, std::size_t* size) override;
+    void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
+    bool lastPacketContainsKeyFrame() const override;
+    bool get(int property_id, double& property_value) const override;
+    int getFirstFrameIdx() const override;
     std::vector<AvPacketPtr> takePendingPackets(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
