@@ -173,3 +173,34 @@ void writeMp4Packet(
         );
     }
 }
+
+void writeMp4Trailer(AVFormatContext& mp4_output_context) {
+    if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
+        std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||
+        mp4_output_context.iformat != nullptr || mp4_output_context.nb_streams != 1 ||
+        !mp4_output_context.streams || !mp4_output_context.streams[0] ||
+        !mp4_output_context.pb || !mp4_output_context.pb->write_flag ||
+        !(mp4_output_context.pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        mp4_output_context.pb->error < 0) {
+        throw std::invalid_argument("A saida deve ser MP4 com uma stream e I/O de escrita com seek e sem erro anterior.");
+    }
+    const AVCodecParameters* output_codec_parameters = mp4_output_context.streams[0]->codecpar;
+    if (!output_codec_parameters || output_codec_parameters->codec_type != AVMEDIA_TYPE_VIDEO ||
+        output_codec_parameters->codec_id != AV_CODEC_ID_H264) {
+        throw std::invalid_argument("A stream de saida deve ser video H.264.");
+    }
+
+    AVIOContext* const output_io_context = mp4_output_context.pb;
+    const int trailer_write_result = av_write_trailer(&mp4_output_context);
+    mp4_output_context.pb = nullptr;
+    if (trailer_write_result < 0) {
+        throw std::runtime_error(
+            "Nao foi possivel finalizar o MP4: erro " + std::to_string(trailer_write_result)
+        );
+    }
+    if (output_io_context->error < 0) {
+        throw std::runtime_error(
+            "O I/O falhou ao finalizar o MP4: erro " + std::to_string(output_io_context->error)
+        );
+    }
+}

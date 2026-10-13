@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -540,6 +541,162 @@ int main() {
             if (openFileDescriptorCount() != initial_descriptor_count) {
                 throw std::runtime_error("O teste de erro de pacote nao deve deixar descritores abertos.");
             }
+
+            const auto expect_trailer_precondition_rejection = [](AVFormatContext& context) {
+                AVIOContext* previous_io_context = context.pb;
+                void* previous_private_data = context.priv_data;
+                const auto previous_stream_count = context.nb_streams;
+                const auto previous_io_position = context.pb ? avio_tell(context.pb) : 0;
+                bool rejected = false;
+                try {
+                    writeMp4Trailer(context);
+                } catch (const std::invalid_argument&) {
+                    rejected = true;
+                }
+                if (!rejected || context.pb != previous_io_context ||
+                    context.priv_data != previous_private_data || context.nb_streams != previous_stream_count ||
+                    (context.pb && avio_tell(context.pb) != previous_io_position)) {
+                    throw std::runtime_error("Uma precondicao invalida deve impedir o trailer sem alterar o contexto ou o I/O.");
+                }
+            };
+            const auto finalized_file_path = test_directory.path() / "finalized-container.mp4";
+            {
+                auto trailer_io_context = openOutputFile(finalized_file_path);
+                AVIOContext* owned_trailer_io_context = trailer_io_context.get();
+                {
+                    auto trailer_format_context = create_video_output_context();
+                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    auto context_without_stream = allocateMp4OutputContext();
+                    expect_trailer_precondition_rejection(*context_without_stream);
+
+                    AVFormatContext* allocated_non_mp4_context = nullptr;
+                    const int non_mp4_allocation_result = avformat_alloc_output_context2(
+                        &allocated_non_mp4_context, nullptr, "matroska", nullptr
+                    );
+                    AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
+                    if (non_mp4_allocation_result < 0 || !non_mp4_context) {
+                        throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o trailer.");
+                    }
+                    expect_trailer_precondition_rejection(*non_mp4_context);
+
+                    writeMp4Header(*trailer_format_context, trailer_io_context);
+                    const int original_write_flag = trailer_io_context->write_flag;
+                    trailer_io_context->write_flag = 0;
+                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_io_context->write_flag = original_write_flag;
+                    const int original_seekability = trailer_io_context->seekable;
+                    trailer_io_context->seekable = 0;
+                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_io_context->seekable = original_seekability;
+                    trailer_io_context->error = AVERROR(EIO);
+                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_io_context->error = 0;
+                    trailer_format_context->streams[0]->codecpar->codec_id = AV_CODEC_ID_HEVC;
+                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_format_context->streams[0]->codecpar->codec_id = AV_CODEC_ID_H264;
+
+                    auto packet = create_prepared_packet(*trailer_format_context->streams[0]);
+                    writeMp4Packet(*trailer_format_context, *packet);
+                    writeMp4Trailer(*trailer_format_context);
+                    if (trailer_format_context->pb || !trailer_io_context ||
+                        trailer_io_context.get() != owned_trailer_io_context || trailer_io_context->error < 0 ||
+                        openFileDescriptorCount() != initial_descriptor_count + 1) {
+                        throw std::runtime_error("O trailer deve desassociar pb sem fechar ou transferir a posse do I/O.");
+                    }
+                    const auto finalized_io_position = avio_tell(trailer_io_context.get());
+                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    auto packet_after_trailer = create_prepared_packet(*trailer_format_context->streams[0]);
+                    expect_packet_precondition_rejection(*trailer_format_context, *packet_after_trailer);
+                    if (avio_tell(trailer_io_context.get()) != finalized_io_position) {
+                        throw std::runtime_error("Outro trailer ou pacote nao deve escrever apos a finalizacao.");
+                    }
+                }
+                if (!trailer_io_context || trailer_io_context.get() != owned_trailer_io_context ||
+                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    throw std::runtime_error("O I/O finalizado deve continuar aberto ate seu proprietario ser liberado.");
+                }
+            }
+            const std::string finalized_contents = readFileContents(finalized_file_path);
+            if (finalized_contents.size() < 8 || finalized_contents.compare(4, 4, "ftyp") != 0 ||
+                finalized_contents.find("mdat") == std::string::npos ||
+                finalized_contents.find("moov") == std::string::npos ||
+                openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("O MP4 finalizado deve conter ftyp, mdat e moov sem descritores restantes.");
+            }
+            {
+                AVFormatContext* opened_input_context = nullptr;
+                const int open_input_result = avformat_open_input(
+                    &opened_input_context, finalized_file_path.c_str(), nullptr, nullptr
+                );
+                const auto close_input = [](AVFormatContext* input) { avformat_close_input(&input); };
+                const std::unique_ptr<AVFormatContext, decltype(close_input)> input_context{
+                    opened_input_context, close_input
+                };
+                if (open_input_result < 0 || !input_context || input_context->nb_streams != 1 ||
+                    !input_context->streams || !input_context->streams[0] ||
+                    !input_context->streams[0]->codecpar ||
+                    input_context->streams[0]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
+                    input_context->streams[0]->codecpar->codec_id != AV_CODEC_ID_H264 ||
+                    input_context->streams[0]->codecpar->width != 1920 ||
+                    input_context->streams[0]->codecpar->height != 1080 ||
+                    input_context->streams[0]->nb_frames != 1) {
+                    throw std::runtime_error("O MP4 deve reabrir com os metadados H.264 e uma amostra codificada.");
+                }
+                // O payload sintetico testa o conteiner, nao um frame decodificavel.
+                input_context->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+                auto read_packet = allocateAvPacket();
+                const int packet_read_result = av_read_frame(input_context.get(), read_packet.get());
+                if (packet_read_result < 0 || !read_packet->data ||
+                    read_packet->size != static_cast<int>(sizeof(synthetic_avcc_payload)) ||
+                    !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload), read_packet->data)) {
+                    throw std::runtime_error("O demux do MP4 deve devolver os mesmos bytes sinteticos sem decodificacao.");
+                }
+                av_packet_unref(read_packet.get());
+                if (av_read_frame(input_context.get(), read_packet.get()) != AVERROR_EOF) {
+                    throw std::runtime_error("O MP4 de teste deve conter somente uma amostra codificada.");
+                }
+            }
+            if (openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("Reabrir o MP4 finalizado nao deve deixar descritores abertos.");
+            }
+
+            {
+                auto failed_trailer_io_context = openOutputFile(test_directory.path() / "failed-trailer.mp4");
+                auto failed_trailer_format_context = create_video_output_context();
+                writeMp4Header(*failed_trailer_format_context, failed_trailer_io_context);
+                auto packet = create_prepared_packet(*failed_trailer_format_context->streams[0]);
+                writeMp4Packet(*failed_trailer_format_context, *packet);
+                avio_flush(failed_trailer_io_context.get());
+                if (failed_trailer_io_context->error < 0) {
+                    throw std::runtime_error("O I/O deve estar sem erro antes da falha injetada de trailer.");
+                }
+                const auto original_write_packet = failed_trailer_io_context->write_packet;
+                failed_trailer_io_context->write_packet = [](void*, uint8_t*, int) { return AVERROR(EIO); };
+                bool trailer_failure_reported = false;
+                try {
+                    writeMp4Trailer(*failed_trailer_format_context);
+                } catch (const std::runtime_error& error) {
+                    failed_trailer_io_context->write_packet = original_write_packet;
+                    trailer_failure_reported = std::string(error.what()).find("erro -") != std::string::npos;
+                } catch (...) {
+                    failed_trailer_io_context->write_packet = original_write_packet;
+                    throw;
+                }
+                failed_trailer_io_context->write_packet = original_write_packet;
+                if (!trailer_failure_reported || failed_trailer_format_context->pb ||
+                    failed_trailer_io_context->error != AVERROR(EIO) ||
+                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    throw std::runtime_error("A falha injetada deve ser informada com pb desassociado e I/O ainda aberto.");
+                }
+                expect_trailer_precondition_rejection(*failed_trailer_format_context);
+                failed_trailer_format_context.reset();
+                if (!failed_trailer_io_context || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    throw std::runtime_error("O contexto com falha de trailer deve ser descartado antes de fechar o I/O.");
+                }
+            }
+            if (openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("A falha injetada de trailer nao deve deixar descritores abertos.");
+            }
         }
         if (std::filesystem::exists(test_directory_path)) {
             throw std::runtime_error("A pasta temporaria do teste nao foi removida: " + test_directory_path.string());
@@ -552,6 +709,9 @@ int main() {
         std::cout << "PASS: precondicoes e segunda chamada rejeitadas; erro real do muxer tratado com descarte seguro.\n";
         std::cout << "PASS: pacote AVCC sintetico escrito no mdat; dados consumidos e AVPacket ainda possuido, sem trailer.\n";
         std::cout << "PASS: pacotes invalidos preservados; erro real de timestamps consome dados sem vazar descritores.\n";
+        std::cout << "PASS: trailer MP4 com moov; mesmos bytes recuperados por demux sem decodificacao.\n";
+        std::cout << "PASS: trailer desassocia pb sem fechar I/O; novas escritas e finalizacoes rejeitadas.\n";
+        std::cout << "PASS: precondicoes preservam contexto; falha injetada no trailer tratada sem descritores restantes.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

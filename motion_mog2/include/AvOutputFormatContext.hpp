@@ -41,3 +41,8 @@ void writeMp4Packet(
     AVFormatContext& mp4_output_context,
     AVPacket& encoded_packet
 );
+
+// Exige cabecalho escrito com sucesso e nenhuma falha anterior de gravacao.
+// Apos chamar o FFmpeg, desassocia pb mesmo em erro; o I/O continua com seu proprietario.
+// Nao finalize novamente: descarte o contexto antes de fechar o I/O.
+void writeMp4Trailer(AVFormatContext& mp4_output_context);
