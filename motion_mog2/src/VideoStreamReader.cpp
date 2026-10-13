@@ -1,4 +1,5 @@
 #include "VideoStreamReader.hpp"
+#include "FfmpegRawVideoSource.hpp"
 
 #include <opencv2/opencv.hpp>
 
@@ -11,10 +12,9 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
     reader_params.rawMode = true;
     reader_params.udpSource = true;
 
-    std::vector<int> source_params;
+    raw_video_source_ = cv::makePtr<FfmpegRawVideoSource>(rtsp_url);
     video_reader_ = cv::cudacodec::createVideoReader(
-        rtsp_url,
-        source_params,
+        raw_video_source_,
         reader_params
     );
 
@@ -46,19 +46,8 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
         );
     }
 
-    double encoded_packet_base_index_value = -1.0;
-    if (!video_reader_->get(
-            cv::cudacodec::VideoReaderProps::PROP_RAW_PACKAGES_BASE_INDEX,
-            encoded_packet_base_index_value)) {
-        throw std::runtime_error(
-            "Nao foi possivel obter PROP_RAW_PACKAGES_BASE_INDEX."
-        );
-    }
-
     decoded_frame_retrieve_index_ =
         static_cast<size_t>(decoded_frame_retrieve_index_value);
-    encoded_packet_base_index_ =
-        static_cast<size_t>(encoded_packet_base_index_value);
 }
 
 bool VideoStreamReader::read(

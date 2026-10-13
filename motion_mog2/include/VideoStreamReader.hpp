@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+class FfmpegRawVideoSource;
+
 struct DecodedFrame {
     cv::cuda::GpuMat decoded_frame_gpu;
     uint64_t decoded_frame_index = 0;
@@ -35,6 +37,8 @@ public:
     uint64_t processedFrameCount() const;
 
 private:
+    // Declarada antes do reader para permanecer viva durante sua destruicao.
+    cv::Ptr<FfmpegRawVideoSource> raw_video_source_;
     cv::Ptr<cv::cudacodec::VideoReader> video_reader_;
     size_t decoded_frame_retrieve_index_ = 0;
     size_t encoded_packet_base_index_ = 0;
