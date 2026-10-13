@@ -62,3 +62,14 @@ cleanup() {
   fi
   return "${exit_status}"
 }
+
+wait_for_rtsp_server() {
+  local deadline=$((SECONDS + 15)) listeners
+  while (( SECONDS < deadline )); do
+    kill -0 "${mediamtx_pid}" 2>/dev/null || fail "MediaMTX encerrou. Consulte ${run_directory}/mediamtx.log"
+    listeners="$(ss -H -ltn 'sport = :8554')" || fail 'Nao foi possivel consultar o listener RTSP.'
+    [[ -z "${listeners}" ]] || return 0
+    sleep 0.2
+  done
+  fail "MediaMTX nao abriu o RTSP em 15 segundos. Consulte ${run_directory}/mediamtx.log"
+}
