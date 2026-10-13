@@ -4,7 +4,6 @@
 #include <opencv2/opencv.hpp>
 
 #include <stdexcept>
-#include <utility>
 
 VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
     cv::cudacodec::VideoReaderInitParams reader_params;
@@ -52,7 +51,7 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
 
 bool VideoStreamReader::read(
     DecodedFrame& decoded_frame,
-    EncodedPacketBatch& encoded_batch,
+    EncodedVideoPackets& encoded_video_packets,
     cv::cuda::Stream& cuda_stream
 ) {
     if (!video_reader_->grab(cuda_stream)) {
@@ -75,47 +74,9 @@ bool VideoStreamReader::read(
         );
     }
 
-    const int encoded_packet_count = static_cast<int>(encoded_packet_count_value);
-    const auto encoded_packet_time = std::chrono::steady_clock::now();
-
-    encoded_batch.encoded_packets.clear();
-    encoded_batch.encoded_packets.reserve(
-        encoded_packet_count > 0 ? static_cast<size_t>(encoded_packet_count) : 0
-    );
-
-    for (int encoded_packet_offset = 0;
-         encoded_packet_offset < encoded_packet_count;
-         ++encoded_packet_offset) {
-        const size_t encoded_packet_index =
-            encoded_packet_base_index_ + static_cast<size_t>(encoded_packet_offset);
-
-        cv::Mat encoded_packet_data;
-        if (!video_reader_->retrieve(encoded_packet_data, encoded_packet_index) ||
-            encoded_packet_data.empty()) {
-            continue;
-        }
-
-        double key_frame_value = static_cast<double>(encoded_packet_index);
-        bool has_key_frame = false;
-        if (video_reader_->get(
-                cv::cudacodec::VideoReaderProps::PROP_LRF_HAS_KEY_FRAME,
-                key_frame_value)) {
-            has_key_frame = key_frame_value != 0.0;
-        }
-
-        const size_t encoded_packet_size_bytes =
-            encoded_packet_data.total() * encoded_packet_data.elemSize();
-
-        EncodedPacket encoded_packet;
-        encoded_packet.data.assign(
-            encoded_packet_data.data,
-            encoded_packet_data.data + encoded_packet_size_bytes
-        );
-        encoded_packet.received_at = encoded_packet_time;
-        encoded_packet.has_key_frame = has_key_frame;
-
-        encoded_batch.encoded_packets.push_back(std::move(encoded_packet));
-    }
+    const size_t encoded_packet_count = static_cast<size_t>(encoded_packet_count_value);
+    encoded_video_packets =
+        raw_video_source_->takePacketsWithStreamParameters(encoded_packet_count);
 
     decoded_frame.decoded_frame_index = next_decoded_frame_index_;
     ++next_decoded_frame_index_;

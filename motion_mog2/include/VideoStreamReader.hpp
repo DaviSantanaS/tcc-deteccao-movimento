@@ -1,6 +1,6 @@
 #pragma once
 
-#include "EncodedPacket.hpp"
+#include "EncodedVideoPackets.hpp"
 
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/core/cuda.hpp>
@@ -8,7 +8,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 class FfmpegRawVideoSource;
 
@@ -17,17 +16,13 @@ struct DecodedFrame {
     uint64_t decoded_frame_index = 0;
 };
 
-struct EncodedPacketBatch {
-    std::vector<EncodedPacket> encoded_packets;
-};
-
 class VideoStreamReader {
 public:
     explicit VideoStreamReader(const std::string& rtsp_url);
 
     bool read(
         DecodedFrame& decoded_frame,
-        EncodedPacketBatch& encoded_batch,
+        EncodedVideoPackets& encoded_video_packets,
         cv::cuda::Stream& cuda_stream
     );
 
@@ -41,7 +36,6 @@ private:
     cv::Ptr<FfmpegRawVideoSource> raw_video_source_;
     cv::Ptr<cv::cudacodec::VideoReader> video_reader_;
     size_t decoded_frame_retrieve_index_ = 0;
-    size_t encoded_packet_base_index_ = 0;
 
     double stream_fps_ = 0.0;
     int decoded_frame_width_ = 0;
