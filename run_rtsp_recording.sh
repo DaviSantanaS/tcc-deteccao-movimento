@@ -26,3 +26,20 @@ require_free_port() {
     fail "Nao foi possivel verificar a porta ${port}."
   [[ -z "${listeners}" ]] || fail "Porta ${port} ocupada; nenhum servico existente sera encerrado."
 }
+
+stop_owned_process() {
+  local process_id="$1" initial_signal="$2" grace_seconds="$3" deadline
+  [[ -n "${process_id}" ]] || return 0
+  if kill -0 "${process_id}" 2>/dev/null; then
+    kill -s "${initial_signal}" -- "-${process_id}" 2>/dev/null || true
+    deadline=$((SECONDS + grace_seconds))
+    while kill -0 "${process_id}" 2>/dev/null && (( SECONDS < deadline )); do
+      sleep 0.1
+    done
+    if kill -0 "${process_id}" 2>/dev/null; then
+      printf '[aviso] Encerramento forcado do processo %s; a saida parcial pode estar incompleta.\n' "${process_id}" >&2
+      kill -s KILL -- "-${process_id}" 2>/dev/null || true
+    fi
+  fi
+  wait "${process_id}" 2>/dev/null || true
+}
