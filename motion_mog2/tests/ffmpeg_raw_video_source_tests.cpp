@@ -1,5 +1,6 @@
 #include "FfmpegRawVideoSource.hpp"
 
+#include <cstring>
 #include <exception>
 #include <iostream>
 
@@ -35,8 +36,32 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        std::size_t first_packet_size = 0;
-        unsigned char first_packet_first_byte = 0;
+        AVFormatContext* reference_input = nullptr;
+        const int reference_open_status = avformat_open_input(&reference_input, argv[1], nullptr, nullptr);
+        const auto close_reference_input = [](AVFormatContext* input) { avformat_close_input(&input); };
+        const std::unique_ptr<AVFormatContext, decltype(close_reference_input)> reference_context(
+            reference_input, close_reference_input
+        );
+        if (reference_open_status < 0 || avformat_find_stream_info(reference_context.get(), nullptr) < 0) {
+            throw std::runtime_error("Nao foi possivel abrir a entrada independente de referencia.");
+        }
+        const int reference_video_stream_index = av_find_best_stream(
+            reference_context.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0
+        );
+        if (reference_video_stream_index < 0) {
+            throw std::runtime_error("A entrada independente deve fornecer uma stream de video.");
+        }
+        auto reference_packet = allocateAvPacket();
+        while (true) {
+            if (av_read_frame(reference_context.get(), reference_packet.get()) < 0) {
+                throw std::runtime_error("Nao foi possivel ler o pacote original de referencia.");
+            }
+            if (reference_packet->stream_index == reference_video_stream_index &&
+                reference_packet->data != nullptr && reference_packet->size > 0) {
+                break;
+            }
+            av_packet_unref(reference_packet.get());
+        }
 
         for (int packet_number = 1; packet_number <= 3; ++packet_number) {
             unsigned char* packet_data = nullptr;
@@ -53,12 +78,13 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            if (packet_number == 1) {
-                first_packet_size = packet_size;
-                first_packet_first_byte = packet_data[0];
+            if (packet_size < 3 || packet_data[0] != 0 || packet_data[1] != 0 ||
+                (packet_data[2] != 1 && (packet_size < 4 || packet_data[2] != 0 || packet_data[3] != 1))) {
+                std::cerr << "O decoder deve receber um pacote em Annex B.\n";
+                return 1;
             }
 
-            std::cout << "packet size=" << packet_size << '\n';
+            std::cout << "decoder packet size=" << packet_size << '\n';
         }
 
         std::vector<AvPacketPtr> pending_packets =
@@ -77,10 +103,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (static_cast<std::size_t>(pending_packets.front()->size) !=
-                first_packet_size ||
-            pending_packets.front()->data[0] != first_packet_first_byte) {
-            std::cerr << "O primeiro clone nao sobreviveu a reutilizacao do pacote.\n";
+        if (pending_packets.front()->size != reference_packet->size ||
+            pending_packets.front()->pts != reference_packet->pts || pending_packets.front()->dts != reference_packet->dts ||
+            std::memcmp(pending_packets.front()->data, reference_packet->data,
+                static_cast<std::size_t>(reference_packet->size)) != 0) {
+            std::cerr << "O primeiro clone nao preservou o pacote original apos as proximas leituras.\n";
             return 1;
         }
 

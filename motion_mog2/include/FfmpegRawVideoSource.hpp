@@ -51,6 +51,7 @@ private:
 
     AvFormatContextPtr video_source_context;
     AvPacketPtr current_encoded_frame_packet;
+    AvPacketPtr current_decoder_packet;
     AVStream* encoded_video_stream = nullptr;
     int encoded_video_stream_index = -1;
     cv::cudacodec::FormatInfo video_format;

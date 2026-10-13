@@ -1,4 +1,6 @@
-#include "FfmpegRawVideoSource.hpp"
+#include <FfmpegRawVideoSource.hpp>
+
+#include <opencv2/core/utils/logger.hpp>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -6,6 +8,7 @@ extern "C" {
 #include <libavutil/rational.h>
 }
 
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <utility>
@@ -194,15 +197,16 @@ void FfmpegRawVideoSource::getExtraData(cv::Mat& extra_data) const {
 }
 
 bool FfmpegRawVideoSource::getNextPacket(
-    unsigned char** encoded_frame_data,
-    std::size_t* encoded_frame_size
+    unsigned char** decoder_packet_data,
+    std::size_t* decoder_packet_size
 ) {
-    if (encoded_frame_data == nullptr || encoded_frame_size == nullptr) {
+    if (decoder_packet_data == nullptr || decoder_packet_size == nullptr) {
         return false;
     }
 
-    *encoded_frame_data = nullptr;
-    *encoded_frame_size = 0;
+    *decoder_packet_data = nullptr;
+    *decoder_packet_size = 0;
+    current_decoder_packet.reset();
     av_packet_unref(current_encoded_frame_packet.get());
 
     while (true) {
@@ -228,15 +232,32 @@ bool FfmpegRawVideoSource::getNextPacket(
 
         current_encoded_frame_packet->time_base = encoded_video_stream->time_base;
 
-        AvPacketPtr pending_packet = cloneAvPacket(*current_encoded_frame_packet);
-        {
-            std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
-            encoded_frames_packets_buffer.push_back(std::move(pending_packet));
-        }
+        try {
+            auto decoder_packets = filterH264PacketToAnnexB(
+                *decoder_bitstream_filter,
+                *current_encoded_frame_packet
+            );
+            if (decoder_packets.size() != 1 || !decoder_packets.front() ||
+                decoder_packets.front()->data == nullptr || decoder_packets.front()->size <= 0) {
+                CV_LOG_ERROR(nullptr,
+                    "O filtro H.264 deve produzir um pacote valido por entrada para manter a contagem raw do OpenCV.");
+                return false;
+            }
 
-        *encoded_frame_data = current_encoded_frame_packet->data;
-        *encoded_frame_size = static_cast<std::size_t>(current_encoded_frame_packet->size);
-        return true;
+            AvPacketPtr pending_packet = cloneAvPacket(*current_encoded_frame_packet);
+            {
+                std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
+                encoded_frames_packets_buffer.push_back(std::move(pending_packet));
+            }
+
+            current_decoder_packet = std::move(decoder_packets.front());
+            *decoder_packet_data = current_decoder_packet->data;
+            *decoder_packet_size = static_cast<std::size_t>(current_decoder_packet->size);
+            return true;
+        } catch (const std::exception& error) {
+            CV_LOG_ERROR(nullptr, "Falha ao preparar o pacote para NVDEC: " << error.what());
+            return false;
+        }
     }
 }
 
