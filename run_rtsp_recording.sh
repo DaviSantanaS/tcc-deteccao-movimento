@@ -19,3 +19,10 @@ fail() {
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Comando nao encontrado: $1"
 }
+
+require_free_port() {
+  local socket_options="$1" port="$2" listeners
+  listeners="$(ss -H "${socket_options}" "sport = :${port}")" ||
+    fail "Nao foi possivel verificar a porta ${port}."
+  [[ -z "${listeners}" ]] || fail "Porta ${port} ocupada; nenhum servico existente sera encerrado."
+}
