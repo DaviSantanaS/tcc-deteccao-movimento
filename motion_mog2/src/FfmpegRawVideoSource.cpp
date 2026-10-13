@@ -30,6 +30,14 @@ FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_url)
     : current_encoded_frame_packet(allocateAvPacket()) {
     openInput(input_url);
     initializeOpenCvFormat();
+    video_stream_parameters = std::make_shared<const VideoStreamParameters>(
+        *encoded_video_stream->codecpar,
+        encoded_video_stream->time_base
+    );
+    decoder_bitstream_filter = createH264AnnexBFilter(
+        *video_stream_parameters->codec_parameters,
+        video_stream_parameters->packet_timestamp_time_base
+    );
     copyCodecExtraDataFromStream();
 }
 
