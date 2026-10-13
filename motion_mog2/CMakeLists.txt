@@ -167,4 +167,18 @@ if(BUILD_TESTING)
             PkgConfig::LIBAVUTIL
     )
 
+    add_executable(
+            opencv_nvdec_file_tests
+            tests/opencv_nvdec_file_tests.cpp
+    )
+
+    target_include_directories(
+            opencv_nvdec_file_tests
+            PRIVATE ${OpenCV_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(
+            opencv_nvdec_file_tests
+            PRIVATE ${OpenCV_LIBS}
+    )
 endif()
