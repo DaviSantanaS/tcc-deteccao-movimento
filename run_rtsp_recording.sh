@@ -43,3 +43,22 @@ stop_owned_process() {
   fi
   wait "${process_id}" 2>/dev/null || true
 }
+
+cleanup() {
+  local exit_status=$?
+  trap '' INT TERM
+  set +e
+  stop_owned_process "${recorder_pid}" INT 10
+  stop_owned_process "${preview_pid}" TERM 3
+  stop_owned_process "${publisher_pid}" TERM 3
+  stop_owned_process "${mediamtx_pid}" TERM 3
+  if [[ -n "${log_viewer_pid}" ]]; then
+    kill "${log_viewer_pid}" 2>/dev/null || true
+    wait "${log_viewer_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "${run_directory}" ]]; then
+    [[ ! -f "${run_directory}/recording.log" ]] || tail -n 5 "${run_directory}/recording.log"
+    printf '\nGravacoes: %s\nLogs preservados: %s\n' "${output_directory}" "${run_directory}"
+  fi
+  return "${exit_status}"
+}
