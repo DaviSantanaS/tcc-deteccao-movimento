@@ -19,6 +19,7 @@ add_executable(
         src/EncodedVideoBuffer.cpp
         src/PreEventConfig.cpp
         src/AvPacket.cpp
+        src/AvOutputFormatContext.cpp
         src/AvCodecParameters.cpp
         src/AvBitstreamFilter.cpp
         src/VideoStreamParameters.cpp
@@ -42,6 +43,30 @@ target_link_libraries(
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(
+            av_output_format_context_tests
+            tests/av_output_format_context_tests.cpp
+            src/AvOutputFormatContext.cpp
+            src/AvPacket.cpp
+            src/VideoStreamParameters.cpp
+            src/AvCodecParameters.cpp
+    )
+
+    target_include_directories(
+            av_output_format_context_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            av_output_format_context_tests
+            PRIVATE
+            PkgConfig::LIBAVFORMAT
+            PkgConfig::LIBAVCODEC
+            PkgConfig::LIBAVUTIL
+    )
+
+    add_test(NAME av_output_format_context_tests COMMAND av_output_format_context_tests)
+
     add_executable(
             encoded_video_buffer_tests
             tests/encoded_video_buffer_tests.cpp

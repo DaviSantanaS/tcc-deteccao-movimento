@@ -16,3 +16,5 @@ struct AvOutputFormatContextDeleter {
 
 using AvOutputFormatContextPtr =
     std::unique_ptr<AVFormatContext, AvOutputFormatContextDeleter>;
+
+[[nodiscard]] AvOutputFormatContextPtr allocateMp4OutputContext();
