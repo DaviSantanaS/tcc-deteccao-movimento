@@ -20,6 +20,7 @@ add_executable(
         src/PreEventConfig.cpp
         src/AvPacket.cpp
         src/AvCodecParameters.cpp
+        src/VideoStreamParameters.cpp
 )
 
 target_include_directories(
@@ -76,5 +77,24 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME av_codec_parameters_tests COMMAND av_codec_parameters_tests)
+
+    add_executable(
+            video_stream_parameters_tests
+            tests/video_stream_parameters_tests.cpp
+            src/VideoStreamParameters.cpp
+            src/AvCodecParameters.cpp
+    )
+
+    target_include_directories(
+            video_stream_parameters_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            video_stream_parameters_tests
+            PRIVATE PkgConfig::LIBAVCODEC
+    )
+
+    add_test(NAME video_stream_parameters_tests COMMAND video_stream_parameters_tests)
 
 endif()
