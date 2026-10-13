@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Mapa interativo da aquisição RTSP, decodificação NVDEC e preservação de AVPacket no TCC de detecção de movimento.">
+  <title>Fluxo RTSP — pacotes preservados e frames na GPU</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: #f5f6f8;
+      --surface: #ffffff;
+      --text: #17243a;
+      --muted: #506078;
+      --line: #d6deea;
+      --decoder: #174ea6;
+      --decoder-surface: #edf4ff;
+      --packets: #8a430b;
+      --packets-surface: #fff5e9;
+      --active: #174ea6;
+      --code: #f1f4f8;
+      --focus: #6240b5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --page: #111923;
+        --surface: #192331;
+        --text: #edf2fa;
+        --muted: #bbc8dc;
+        --line: #39485d;
+        --decoder: #9ec6ff;
+        --decoder-surface: #172f4e;
+        --packets: #ffc58f;
+        --packets-surface: #3b2b20;
+        --active: #9ec6ff;
+        --code: #121c29;
+        --focus: #d7b8ff;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 16px/1.55 system-ui, sans-serif; }
+    a { color: var(--decoder); text-underline-offset: .18em; }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    button:focus-visible, a:focus-visible { outline: 3px solid var(--focus); outline-offset: 4px; }
+    code, pre { font-family: ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace; }
+    code { overflow-wrap: anywhere; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 760px; margin-bottom: .5rem; font-size: clamp(2rem, 5vw, 3.4rem); line-height: 1.1; letter-spacing: -.04em; }
+    h2 { margin-bottom: .65rem; font-size: 1.3rem; letter-spacing: -.02em; }
+    h3 { font-size: 1.08rem; line-height: 1.35; }
+    p { margin-bottom: .8rem; }
+    .page { width: min(1240px, 100%); margin-inline: auto; padding: 32px; }
+    .eyebrow { color: var(--muted); font-size: .78rem; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; }
+    .lead { max-width: 820px; color: var(--muted); font-size: 1.08rem; }
+    .snapshot { display: flex; flex-wrap: wrap; gap: .25rem 1.2rem; margin: 20px 0; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+    .top-links { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 24px; font-size: .9rem; }
+    .notice { padding: 14px 18px; border-left: 3px solid var(--decoder); background: var(--decoder-surface); font-size: .92rem; }
+    .notice p:last-child { margin-bottom: 0; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr); gap: 24px; align-items: start; margin-top: 28px; }
+    .diagram, .study { min-width: 0; }
+    .panel-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+    .legend { display: flex; flex-wrap: wrap; gap: .45rem 1rem; margin-bottom: 14px; font-size: .82rem; color: var(--muted); }
+    .legend span { display: inline-flex; gap: .4rem; align-items: center; }
+    .legend-mark { width: 10px; height: 10px; border-radius: 50%; background: var(--decoder); }
+    .legend-mark.packets { background: var(--packets); border-radius: 2px; }
+    .lane { padding: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 14px; }
+    .lane-title { display: block; margin-bottom: 10px; color: var(--muted); font-size: .75rem; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; }
+    .flow-node { width: 100%; min-height: 64px; padding: 12px 14px; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; line-height: 1.3; }
+    .flow-node .node-name { display: block; margin: .3rem 0; font-weight: 650; overflow-wrap: anywhere; }
+    .flow-node .node-note { display: block; color: var(--muted); font-size: .82rem; }
+    .step-number { display: inline-block; color: var(--muted); font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .flow-node[aria-pressed="true"] { outline: 2px solid var(--active); outline-offset: 2px; }
+    .decoder-path { background: var(--decoder-surface); }
+    .packet-path { background: var(--packets-surface); }
+    .flow-arrow { text-align: center; padding: 5px 0; color: var(--muted); font-size: .82rem; }
+    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .path-label { margin: 0 0 7px; font-size: .8rem; font-weight: 650; }
+    .decoder-label { color: var(--decoder); }
+    .packet-label { color: var(--packets); }
+    .packet-tokens { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .packet-tokens span { padding: 3px 5px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; font-size: .65rem; }
+    .data-output { min-width: 0; padding: 12px; border-radius: 9px; font-size: .85rem; }
+    .data-output strong { display: block; margin-bottom: 4px; overflow-wrap: anywhere; }
+    .diagram-note { color: var(--muted); font-size: .82rem; }
+    .navigation { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
+    .navigation button { min-height: 44px; padding: 8px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+    .navigation button:disabled { opacity: .45; cursor: default; }
+    .step-status { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+    .step-detail { padding: 22px; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; scroll-margin-top: 16px; }
+    .step-detail .eyebrow { margin-bottom: 6px; }
+    .step-detail h3 { font-size: 1.3rem; margin-bottom: 12px; }
+    .step-detail dl { margin: 14px 0; }
+    .step-detail dt { color: var(--muted); font-size: .78rem; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; margin-top: 12px; }
+    .step-detail dd { margin: 3px 0 0; font-size: .92rem; }
+    .source-ref { display: block; margin: 18px 0 7px; color: var(--muted); font-size: .76rem; overflow-wrap: anywhere; }
+    pre { margin: 0; padding: 12px; background: var(--code); border-radius: 8px; font-size: .76rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .key-point { margin-top: 16px; margin-bottom: 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: .9rem; }
+    .section { margin-top: 36px; }
+    .section-intro { max-width: 850px; color: var(--muted); }
+    .rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .rule { padding: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+    .rule p { font-size: .9rem; }
+    .rule p:last-child { margin-bottom: 0; }
+    .status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .status-card { padding: 18px; border: 1px dashed var(--line); border-radius: 12px; background: var(--surface); }
+    .status-label { display: block; margin-bottom: 8px; color: var(--muted); font-size: .75rem; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+    .status-card p { font-size: .88rem; }
+    .references { padding-left: 20px; font-size: .88rem; overflow-wrap: anywhere; }
+    .references li { margin-bottom: 8px; }
+    footer { margin-top: 32px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; }
+    [hidden] { display: none !important; }
+    @media (max-width: 940px) {
+      .workspace { grid-template-columns: minmax(0, 1fr); }
+      .status-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 520px) {
+      .page { padding: 20px 14px; }
+      .split, .rules { grid-template-columns: minmax(0, 1fr); }
+      .lane { padding: 12px; }
+      .step-detail { padding: 16px; }
+      .snapshot { font-size: .75rem; }
+      .navigation { justify-content: flex-start; }
+      .step-status { flex-basis: 100%; order: -1; }
+    }
+    @media print {
+      :root { color-scheme: light; --page: #fff; --surface: #fff; --text: #111; --muted: #333; --line: #bbb; --decoder: #111; --packets: #111; --decoder-surface: #f5f5f5; --packets-surface: #f5f5f5; --code: #f5f5f5; }
+      body { font-size: 10pt; }
+      .page { width: 100%; padding: 0; }
+      h1 { font-size: 25pt; }
+      .workspace { display: block; }
+      .navigation, .top-links, .interactive-instruction { display: none !important; }
+      .step-detail, .step-detail[hidden] { display: block !important; break-inside: avoid; margin-top: 12px; }
+      .lane, .rule, .status-card { break-inside: avoid; }
+      .flow-node[aria-pressed="true"] { outline: none; }
+      .split, .rules { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .status-grid { grid-template-columns: minmax(0, 1fr); }
+      .source-ref, pre { font-size: 8pt; }
+      a { color: #111; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page" id="rtsp-flow">
+    <header>
+      <p class="eyebrow">TCC · mapa de interação dos métodos</p>
+      <h1>Um vídeo.<br>Dois caminhos.</h1>
+      <p class="lead">O bitstream alimenta o decoder na GPU. Os pacotes originais continuam disponíveis para armazenamento, com seus metadados preservados.</p>
+      <div class="snapshot">
+        <span>Leitura do código: <strong>12/10/2026</strong></span>
+        <span>Branch: <code>agent/tcc-stepwise-codex-test</code></span>
+        <span>HEAD: <code>cfbca46</code> + alterações locais</span>
+      </div>
+      <nav class="top-links" aria-label="Seções da documentação">
+        <a href="#mapa">Mapa geral</a>
+        <a href="#etapas">Estudar as etapas</a>
+        <a href="#limites">O que não confundir</a>
+        <a href="#estado">Estado da implementação</a>
+      </nav>
+      <div class="notice">
+        <p><strong>Esta página explica o código; não executa o pipeline.</strong> A ordem numerada é didática. A fonte alimenta o OpenCV em uma thread própria; o <code>read()</code> recupera os resultados na aplicação. Não é uma cadeia síncrona em que cada leitura chama diretamente todos os métodos.</p>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <section class="diagram" id="mapa" aria-labelledby="map-heading">
+        <div class="panel-heading">
+          <h2 id="map-heading">Mapa dos dados</h2>
+          <span class="eyebrow">Clique em uma etapa</span>
+        </div>
+        <div class="legend" aria-label="Legenda dos caminhos">
+          <span><i class="legend-mark" aria-hidden="true"></i> Decodificação / imagem</span>
+          <span><i class="legend-mark packets" aria-hidden="true"></i> Originais / armazenamento</span>
+        </div>
+        <div class="lane">
+          <span class="lane-title">Preparação · uma vez por leitor</span>
+          <button type="button" class="flow-node" data-select-step="1" aria-controls="step-1" aria-label="Etapa 1: registrar a fonte no OpenCV">
+            <span class="step-number">01 · conectar a fonte</span>
+            <span class="node-name"><code>createVideoReader(raw_video_source_)</code></span>
+            <span class="node-note">O OpenCV recebe nossa fonte de pacotes.</span>
+          </button>
+        </div>
+        <div class="lane">
+          <span class="lane-title">Aquisição · thread da fonte no OpenCV</span>
+          <button type="button" class="flow-node" data-select-step="2" aria-controls="step-2" aria-label="Etapa 2: ler AVPacket com FFmpeg">
+            <span class="step-number">02 · receber vídeo RTSP</span>
+            <span class="node-name"><code>getNextPacket() → av_read_frame()</code></span>
+            <span class="node-note">FFmpeg preenche um AVPacket de vídeo.</span>
+          </button>
+          <div class="flow-arrow" aria-hidden="true">↓ pacote H.264</div>
+          <button type="button" class="flow-node decoder-path" data-select-step="3" aria-controls="step-3" aria-label="Etapa 3: adaptar o bitstream para Annex B">
+            <span class="step-number">03 · preparar a entrada do decoder</span>
+            <span class="node-name"><code>filterH264PacketToAnnexB()</code></span>
+            <span class="node-note">Adaptação do bitstream, sem transcoding.</span>
+          </button>
+          <div class="flow-arrow">↓ após validar a saída do filtro</div>
+          <div class="split">
+            <div>
+              <p class="path-label packet-label">Pacote original</p>
+              <button type="button" class="flow-node packet-path" data-select-step="4" aria-controls="step-4" aria-label="Etapa 4: preservar os originais na deque">
+                <span class="step-number">04 · preservar</span>
+                <span class="node-name"><code>cloneAvPacket() → deque</code></span>
+                <span class="node-note">Originais em ordem, protegidos por mutex.</span>
+                <span class="packet-tokens" aria-hidden="true"><span>AVPacket</span><span>AVPacket</span><span>…</span></span>
+              </button>
+            </div>
+            <div>
+              <p class="path-label decoder-label">Pacote adaptado</p>
+              <button type="button" class="flow-node decoder-path" data-select-step="4" aria-controls="step-4" aria-label="Etapa 4: entregar os bytes adaptados ao NVDEC">
+                <span class="step-number">04 · decodificar</span>
+                <span class="node-name"><code>data + size → OpenCV / NVDEC</code></span>
+                <span class="node-note">O parser recebe o fluxo e o decoder produz imagens.</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="lane">
+          <span class="lane-title">Consumo · aplicação / VideoStreamReader::read()</span>
+          <button type="button" class="flow-node decoder-path" data-select-step="5" aria-controls="step-5" aria-label="Etapa 5: recuperar o frame na GPU">
+            <span class="step-number">05 · obter a imagem</span>
+            <span class="node-name"><code>grab() → retrieve()</code></span>
+            <span class="node-note">Recupera a imagem em decoded_frame_gpu.</span>
+          </button>
+          <div class="flow-arrow" aria-hidden="true">↓ consultar os dados raw da aquisição</div>
+          <button type="button" class="flow-node" data-select-step="6" aria-controls="step-6" aria-label="Etapa 6: consultar a quantidade N de pacotes raw">
+            <span class="step-number">06 · descobrir a quantidade N</span>
+            <span class="node-name"><code>get(PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB)</code></span>
+            <span class="node-note">Contagem de pacotes, não tamanho em bytes nem índice de frame.</span>
+          </button>
+          <div class="flow-arrow">↓ N informa quantos originais retirar da deque</div>
+          <button type="button" class="flow-node packet-path" data-select-step="7" aria-controls="step-7" aria-label="Etapa 7: mover os N primeiros pacotes da deque para o vetor">
+            <span class="step-number">07 · retirar os originais</span>
+            <span class="node-name"><code>dequeueEncodedPackets(N)</code></span>
+            <span class="node-note">Chamado por takePacketsWithStreamParameters(N).</span>
+          </button>
+          <div class="flow-arrow" aria-hidden="true">↓ vetor de AvPacketPtr</div>
+          <button type="button" class="flow-node packet-path" data-select-step="8" aria-controls="step-8" aria-label="Etapa 8: devolver pacotes e parâmetros da stream">
+            <span class="step-number">08 · montar e devolver a coleção</span>
+            <span class="node-name"><code>takePacketsWithStreamParameters(N)</code></span>
+            <span class="node-note">Acrescenta a configuração e devolve EncodedVideoPackets ao read().</span>
+          </button>
+          <div class="flow-arrow">↓ read() conclui com duas saídas separadas</div>
+          <div class="split" aria-label="Saídas da leitura bem-sucedida">
+            <div class="data-output decoder-path"><strong><code>DecodedFrame</code></strong>Imagem na GPU + índice local<br><span class="decoder-label">Destino: detecção com MOG2</span></div>
+            <div class="data-output packet-path"><strong><code>EncodedVideoPackets</code></strong>Vetor de AVPacket + parâmetros<br><span class="packet-label">Destino: buffer / futuro remux</span></div>
+          </div>
+        </div>
+        <p class="diagram-note">As setas indicam o caminho dos dados, não uma árvore de chamadas. A etapa 8 chama internamente o método da etapa 7. Os destinos finais aparecem no mapa, mas sua integração completa não está validada.</p>
+      </section>
+
+      <section class="study" id="etapas" aria-labelledby="study-heading">
+        <h2 id="study-heading">Uma interação por vez</h2>
+        <p class="interactive-instruction">Selecione uma etapa no mapa ou avance pelos botões. Os trechos são cópias curtas do código existente, não implementações novas.</p>
+        <div class="navigation" id="step-navigation" hidden>
+          <button type="button" id="previous-step">← Anterior</button>
+          <span class="step-status" id="step-status" aria-live="polite"></span>
+          <button type="button" id="next-step">Próximo →</button>
+        </div>
+        <noscript><p class="notice">Sem JavaScript: todas as etapas estão disponíveis abaixo. A impressão também exibe todas as explicações.</p></noscript>
+
+        <article class="step-detail" id="step-1" data-step-title="Registrar a fonte">
+          <p class="eyebrow">Etapa 01 · preparação</p>
+          <h3>Quem fornece os pacotes ao OpenCV?</h3>
+          <p>O construtor do <code>VideoStreamReader</code> cria nossa <code>FfmpegRawVideoSource</code> e a registra no <code>cv::cudacodec::VideoReader</code>.</p>
+          <dl>
+            <dt>Quem chama</dt><dd>A aplicação cria o <code>VideoStreamReader</code>; seu construtor chama <code>createVideoReader()</code>.</dd>
+            <dt>Entrada e saída</dt><dd>Entra a URL da fonte; fica disponível um reader conectado à interface de pacotes. <code>rawMode = true</code> permite consultar os pacotes raw recuperados pelo OpenCV.</dd>
+            <dt>Tempo de vida</dt><dd><code>raw_video_source_</code> mantém a fonte viva. A configuração do codec e a base de tempo são preparadas pela fonte antes do uso pelo reader.</dd>
+            <dt>Possíveis erros</dt><dd>A abertura da entrada, a validação do codec/formato e a inicialização do decoder podem falhar durante a construção. Esta página não tenta abrir uma câmera.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/VideoStreamReader.cpp · linhas 9–18</span>
+          <pre data-source-path="motion_mog2/src/VideoStreamReader.cpp" data-source-lines="9-18"><code>    cv::cudacodec::VideoReaderInitParams reader_params;
+    reader_params.allowFrameDrop = false;
+    reader_params.rawMode = true;
+    reader_params.udpSource = true;
+
+    raw_video_source_ = cv::makePtr&lt;FfmpegRawVideoSource&gt;(rtsp_url);
+    video_reader_ = cv::cudacodec::createVideoReader(
+        raw_video_source_,
+        reader_params
+    );</code></pre>
+          <p class="key-point"><strong>Concorrência:</strong> no OpenCV 4.10 local, <code>RawVideoSourceWrapper::start()</code> cria a thread de aquisição. <code>readLoop()</code> chama nossa fonte repetidamente. Referência da dependência: <code>cudacodec/src/video_source.cpp</code>, linhas 83–87 e 107–116.</p>
+        </article>
+
+        <article class="step-detail" id="step-2" data-step-title="Ler o AVPacket">
+          <p class="eyebrow">Etapa 02 · aquisição</p>
+          <h3>Do RTSP para o AVPacket</h3>
+          <p>O loop da fonte no OpenCV chama <code>getNextPacket()</code>. Nosso método usa <code>av_read_frame()</code> para recuperar dados codificados demultiplexados pelo FFmpeg.</p>
+          <dl>
+            <dt>Quem chama</dt><dd>O wrapper do OpenCV chama <code>FfmpegRawVideoSource::getNextPacket()</code>, que chama o FFmpeg.</dd>
+            <dt>Entrada e saída</dt><dd>O contexto de entrada já está aberto. O FFmpeg preenche <code>current_encoded_frame_packet</code>; em seguida, o código seleciona apenas pacotes de vídeo com dados válidos.</dd>
+            <dt>Ownership</dt><dd>O pacote de leitura pertence à fonte e é reutilizado. Por isso não guardamos apenas seu ponteiro bruto no histórico.</dd>
+            <dt>Possíveis erros</dt><dd><code>EAGAIN</code> provoca nova tentativa. Outro retorno negativo encerra esta aquisição com <code>false</code>. Pacotes de outras streams ou sem dados são ignorados.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/FfmpegRawVideoSource.cpp · linhas 213–216; tratamento nas linhas 218–230</span>
+          <pre data-source-path="motion_mog2/src/FfmpegRawVideoSource.cpp" data-source-lines="213-216"><code>        const int packet_read_status = av_read_frame(
+            video_source_context.get(),
+            current_encoded_frame_packet.get()
+        );</code></pre>
+          <p class="key-point"><strong>Não confundir:</strong> um <code>AVPacket</code> contém dados codificados recuperados pelo demuxer. Não é a imagem decodificada na GPU, nem simplesmente um datagrama UDP da rede.</p>
+        </article>
+
+        <article class="step-detail" id="step-3" data-step-title="Adaptar o bitstream">
+          <p class="eyebrow">Etapa 03 · entrada do decoder</p>
+          <h3>Por que adaptar os bytes?</h3>
+          <p><code>filterH264PacketToAnnexB()</code> usa o filtro <code>h264_mp4toannexb</code> para preparar a forma do bitstream destinada ao parser do NVDEC. O caminho de armazenamento conserva o pacote original.</p>
+          <dl>
+            <dt>Quem chama</dt><dd><code>getNextPacket()</code> chama o helper com o filtro persistente e o pacote original.</dd>
+            <dt>Entrada e saída</dt><dd>Entra um pacote H.264. O helper devolve um vetor de pacotes filtrados; nossa fonte exige exatamente uma saída válida por entrada neste MVP.</dd>
+            <dt>Ownership</dt><dd>O helper envia ao filtro um clone do pacote. A fonte conserva a saída usada pelo decoder em <code>current_decoder_packet</code>.</dd>
+            <dt>Possíveis erros</dt><dd>Erros do filtro são capturados e registrados pela fonte. Zero, múltiplas ou uma saída inválida fazem a fonte retornar <code>false</code>, em vez de quebrar silenciosamente a correspondência das contagens raw.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/FfmpegRawVideoSource.cpp · linhas 236–245; helper em AvBitstreamFilter.cpp, linhas 68–110</span>
+          <pre data-source-path="motion_mog2/src/FfmpegRawVideoSource.cpp" data-source-lines="236-245"><code>            auto decoder_packets = filterH264PacketToAnnexB(
+                *decoder_bitstream_filter,
+                *current_encoded_frame_packet
+            );
+            if (decoder_packets.size() != 1 || !decoder_packets.front() ||
+                decoder_packets.front()-&gt;data == nullptr || decoder_packets.front()-&gt;size &lt;= 0) {
+                CV_LOG_ERROR(nullptr,
+                    "O filtro H.264 deve produzir um pacote valido por entrada para manter a contagem raw do OpenCV.");
+                return false;
+            }</code></pre>
+          <p class="key-point"><strong>Não é transcoding:</strong> o filtro altera o empacotamento do bitstream, sem decodificar e reencodar as imagens. “Uma saída por entrada” significa pacotes, não “um frame por pacote”.</p>
+        </article>
+
+        <article class="step-detail" id="step-4" data-step-title="Preservar e entregar">
+          <p class="eyebrow">Etapa 04 · dois caminhos</p>
+          <h3>O original fica; o adaptado segue</h3>
+          <p>Depois de validar o resultado do filtro, o código preserva o original na deque e entrega o ponteiro e o tamanho dos bytes adaptados ao OpenCV.</p>
+          <dl>
+            <dt>Quem chama</dt><dd>Estas operações fazem parte de <code>getNextPacket()</code>. Depois do retorno, o wrapper do OpenCV encaminha os bytes ao parser.</dd>
+            <dt>Saída para armazenamento</dt><dd><code>cloneAvPacket()</code> cria outro objeto AVPacket/referência. Para payload referenciado, os bytes são compartilhados por referência; não há promessa de cópia profunda do vídeo.</dd>
+            <dt>Saída para decodificação</dt><dd><code>decoder_packet_data</code> e <code>decoder_packet_size</code> apontam para a saída filtrada. O decoder não recebe o vetor que depois retiramos da deque.</dd>
+            <dt>Tempo de vida e sincronização</dt><dd><code>current_decoder_packet</code> mantém os bytes entregues vivos até a próxima chamada da fonte. A deque mantém os originais e é protegida por mutex na inserção e na retirada.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/FfmpegRawVideoSource.cpp · linhas 247–256; clone em AvPacket.cpp, linhas 19–26</span>
+          <pre data-source-path="motion_mog2/src/FfmpegRawVideoSource.cpp" data-source-lines="247-256"><code>            AvPacketPtr pending_packet = cloneAvPacket(*current_encoded_frame_packet);
+            {
+                std::lock_guard&lt;std::mutex&gt; lock(encoded_frames_packets_buffer_mutex);
+                encoded_frames_packets_buffer.push_back(std::move(pending_packet));
+            }
+
+            current_decoder_packet = std::move(decoder_packets.front());
+            *decoder_packet_data = current_decoder_packet-&gt;data;
+            *decoder_packet_size = static_cast&lt;std::size_t&gt;(current_decoder_packet-&gt;size);
+            return true;</code></pre>
+          <p class="key-point"><strong>São dois usos do mesmo vídeo:</strong> uma imagem será produzida para análise; os dados codificados originais são preservados para o futuro armazenamento sem transcoding.</p>
+        </article>
+
+        <article class="step-detail" id="step-5" data-step-title="Recuperar o frame">
+          <p class="eyebrow">Etapa 05 · leitura na aplicação</p>
+          <h3>A imagem chega à aplicação</h3>
+          <p><code>VideoStreamReader::read()</code> chama <code>grab()</code> e recupera a imagem com <code>retrieve()</code>. A alimentação da fonte pode ter começado antes desta chamada.</p>
+          <dl>
+            <dt>Quem chama</dt><dd>A aplicação chama <code>read()</code>; o método usa o reader do OpenCV registrado na preparação.</dd>
+            <dt>Entrada e saída</dt><dd>Entra a stream CUDA. A imagem recuperada fica em <code>decoded_frame.decoded_frame_gpu</code>, um <code>cv::cuda::GpuMat</code>.</dd>
+            <dt>Separação de responsabilidades</dt><dd>A imagem decodificada e os AVPacket são saídas distintas. O índice local do frame é atribuído no fim da leitura; ele não estabelece uma associação exata com cada pacote.</dd>
+            <dt>Possíveis erros</dt><dd>Se <code>grab()</code> falhar, <code>read()</code> retorna <code>false</code> antes de solicitar a retirada dos originais. Se a imagem não for recuperada ou estiver vazia, lança uma exceção.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/VideoStreamReader.cpp · linhas 57–66; DecodedFrame em VideoStreamReader.hpp, linhas 14–17</span>
+          <pre data-source-path="motion_mog2/src/VideoStreamReader.cpp" data-source-lines="57-66"><code>    if (!video_reader_-&gt;grab(cuda_stream)) {
+        return false;
+    }
+
+    if (!video_reader_-&gt;retrieve(
+            decoded_frame.decoded_frame_gpu,
+            decoded_frame_retrieve_index_) ||
+        decoded_frame.decoded_frame_gpu.empty()) {
+        throw std::runtime_error("Frame decodificado nao foi recuperado.");
+    }</code></pre>
+          <p class="key-point"><strong>O read() não envia diretamente o bitstream.</strong> Sua função aqui é recuperar os resultados do OpenCV e coletar os pacotes originais correspondentes à quantidade raw informada.</p>
+        </article>
+
+        <article class="step-detail" id="step-6" data-step-title="Consultar N">
+          <p class="eyebrow">Etapa 06 · contagem</p>
+          <h3>O que significa N?</h3>
+          <p>O OpenCV informa a quantidade de pacotes raw recuperados na aquisição. O <code>read()</code> usa essa quantidade para pedir o mesmo número de pacotes originais à nossa fonte.</p>
+          <dl>
+            <dt>Quem chama</dt><dd>O <code>read()</code> consulta <code>VideoReader::get()</code> com <code>PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB</code>.</dd>
+            <dt>Entrada e saída</dt><dd>A propriedade devolve um valor numérico, convertido para <code>size_t</code>. N é uma quantidade de pacotes: não é quantidade de bytes nem o número do frame.</dd>
+            <dt>Por que não é “um frame codificado”</dt><dd>No OpenCV local, a retirada de um frame de exibição esvazia a fila de pacotes raw disponíveis. Ela pode conter dados acumulados para mais de uma imagem.</dd>
+            <dt>Possíveis erros</dt><dd>Se a consulta da propriedade falhar, o método lança uma exceção. A conversão do valor numérico não tem validação adicional nesta versão; a página não apresenta essa robustez como concluída.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/VideoStreamReader.cpp · linhas 68–77; dependência: cudacodec/src/frame_queue.cpp, linhas 153–164</span>
+          <pre data-source-path="motion_mog2/src/VideoStreamReader.cpp" data-source-lines="68-77"><code>    double encoded_packet_count_value = 0.0;
+    if (!video_reader_-&gt;get(
+            cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
+            encoded_packet_count_value)) {
+        throw std::runtime_error(
+            "Nao foi possivel obter a quantidade de pacotes codificados."
+        );
+    }
+
+    const size_t encoded_packet_count = static_cast&lt;size_t&gt;(encoded_packet_count_value);</code></pre>
+          <p class="key-point"><strong>N pode ser zero mesmo com uma imagem recuperada.</strong> Os pacotes usados para prepará-la podem ter sido entregues em uma coleção anterior. Isso, por si só, não significa perda de frame.</p>
+        </article>
+
+        <article class="step-detail" id="step-7" data-step-title="Retirar os originais">
+          <p class="eyebrow">Etapa 07 · transferência de ownership</p>
+          <h3>Da deque para o vetor</h3>
+          <p>O <code>read()</code> chama <code>takePacketsWithStreamParameters(N)</code>, que chama internamente <code>dequeueEncodedPackets(N)</code>. Este último retira os primeiros N originais, preservando sua ordem.</p>
+          <dl>
+            <dt>Quem chama</dt><dd><code>takePacketsWithStreamParameters()</code> chama <code>dequeueEncodedPackets()</code>; o método de retirada não chama o método de montagem.</dd>
+            <dt>Entrada e saída</dt><dd>Entra <code>packet_count</code>. Sai um <code>std::vector&lt;AvPacketPtr&gt;</code> com essa quantidade de pacotes.</dd>
+            <dt>Ownership</dt><dd><code>std::move()</code> transfere cada ponteiro proprietário da deque para o vetor. <code>pop_front()</code> remove a posição já movida. Não copia novamente os bytes do vídeo.</dd>
+            <dt>Possíveis erros</dt><dd>A retirada mantém o mutex e verifica a disponibilidade antes de mover qualquer pacote. Se N exceder o tamanho da deque, lança uma exceção. Para N = 0, devolve um vetor vazio.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/FfmpegRawVideoSource.cpp · linhas 280–285; mutex e verificação nas linhas 267–274</span>
+          <pre data-source-path="motion_mog2/src/FfmpegRawVideoSource.cpp" data-source-lines="280-285"><code>    for (std::size_t index = 0; index &lt; packet_count; ++index) {
+        packets.push_back(std::move(encoded_frames_packets_buffer.front()));
+        encoded_frames_packets_buffer.pop_front();
+    }
+
+    return packets;</code></pre>
+          <p class="key-point"><strong>Não há condição de keyframe neste método.</strong> A quantidade solicitada é o gatilho da retirada. Quando o último <code>AvPacketPtr</code> proprietário é destruído, seu deleter chama <code>av_packet_free()</code> (AvPacket.cpp, linhas 5–6).</p>
+        </article>
+
+        <article class="step-detail" id="step-8" data-step-title="Devolver a coleção">
+          <p class="eyebrow">Etapa 08 · saídas da leitura</p>
+          <h3>Pacotes + configuração, sem misturar com a imagem</h3>
+          <p><code>takePacketsWithStreamParameters()</code> monta um <code>EncodedVideoPackets</code> com o vetor retornado e a configuração compartilhada. O <code>read()</code> atribui esse objeto à saída, atualiza o índice local da imagem e retorna <code>true</code>.</p>
+          <dl>
+            <dt>Dados da coleção</dt><dd><code>encoded_packets</code> contém os ponteiros proprietários dos AVPacket. <code>video_stream_parameters</code> mantém os parâmetros do codec e a base de tempo dos pacotes.</dd>
+            <dt>Ownership</dt><dd>O vetor transfere a posse dos pacotes. A configuração imutável usa <code>shared_ptr</code>: as coleções compartilham sua vida útil, sem copiar os parâmetros em cada leitura.</dd>
+            <dt>Resultado para a aplicação</dt><dd><code>DecodedFrame</code> contém imagem e índice; <code>EncodedVideoPackets</code> contém os dados codificados e a configuração. Ambos são entregues na mesma leitura bem-sucedida, mas não existe uma garantia de correspondência exclusiva pacote–imagem.</dd>
+            <dt>Próximo consumidor</dt><dd><code>EncodedVideoBuffer::appendReadPackets()</code> guarda cada coleção inteira por movimento e conta uma leitura, mesmo sem novos pacotes. Retorna <code>true</code> ao atingir o limite; uma leitura adicional é rejeitada sem consumir a entrada. <code>takeBufferedReadPackets()</code> transfere todas as coleções, inclusive um conjunto parcial, e reinicia a contagem. A chamada desses métodos pela aplicação ainda não está integrada.</dd>
+          </dl>
+          <span class="source-ref">motion_mog2/src/FfmpegRawVideoSource.cpp · linhas 288–295</span>
+          <pre data-source-path="motion_mog2/src/FfmpegRawVideoSource.cpp" data-source-lines="288-295"><code>EncodedVideoPackets FfmpegRawVideoSource::takePacketsWithStreamParameters(
+    std::size_t packet_count
+) {
+    return {
+        dequeueEncodedPackets(packet_count),
+        video_stream_parameters
+    };
+}</code></pre>
+          <span class="source-ref">motion_mog2/src/VideoStreamReader.cpp · linhas 78–83</span>
+          <pre data-source-path="motion_mog2/src/VideoStreamReader.cpp" data-source-lines="78-83"><code>    encoded_video_packets =
+        raw_video_source_-&gt;takePacketsWithStreamParameters(encoded_packet_count);
+
+    decoded_frame.decoded_frame_index = next_decoded_frame_index_;
+    ++next_decoded_frame_index_;
+    return true;</code></pre>
+          <p class="key-point"><strong>A estrutura é montada na fonte, não dentro do read().</strong> O <code>read()</code> recebe a coleção pronta. Referências dos tipos: EncodedVideoPackets.hpp, linhas 9–12; VideoStreamParameters.hpp, linhas 11–18.</p>
+        </article>
+      </section>
+    </div>
+
+    <section class="section" id="limites" aria-labelledby="limits-heading">
+      <h2 id="limits-heading">Quatro distinções para explicar ao orientador</h2>
+      <div class="rules">
+        <div class="rule">
+          <h3>Keyframe não esvazia a deque</h3>
+          <p><code>lastPacketContainsKeyFrame()</code> informa a flag do último pacote. A retirada dos originais é solicitada pelo <code>read()</code> usando N, sem testar essa flag.</p>
+          <p class="source-ref">FfmpegRawVideoSource.cpp:159–161 e 264–295; VideoStreamReader.cpp:68–79.</p>
+        </div>
+        <div class="rule">
+          <h3>Grupo de uma leitura ≠ frame codificado exato</h3>
+          <p>O objeto reúne os pacotes retirados naquela leitura. Não podemos afirmar que todos representem exclusivamente a imagem entregue junto dele.</p>
+          <p class="source-ref">VideoStreamReader.cpp:68–83; OpenCV local, frame_queue.cpp:160–164.</p>
+        </div>
+        <div class="rule">
+          <h3>Clone de pacote ≠ cópia profunda do vídeo</h3>
+          <p>O AVPacket clonado tem outro objeto/referência, com payload referenciado compartilhado. Já a configuração de codec é copiada para armazenamento independente ao criar os parâmetros da stream.</p>
+          <p class="source-ref">AvPacket.cpp:19–26; VideoStreamParameters.cpp:5–15; AvCodecParameters.cpp:23–40.</p>
+        </div>
+        <div class="rule">
+          <h3>1000 leituras ≠ MP4 independente garantido</h3>
+          <p>O MVP pretende preservar os pacotes durante 1000 leituras bem-sucedidas. Isso não garante 1000 pacotes, 1000 imagens em um arquivo futuro nem um corte decodificável. Os limites por keyframe e as dependências precisam ser tratados no futuro remux.</p>
+          <p class="source-ref">EncodedVideoBuffer.hpp:10–20; contexto histórico em relatorio12out.md, seção 6.1.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="estado" aria-labelledby="state-heading">
+      <h2 id="state-heading">Onde termina o fluxo atual?</h2>
+      <p class="section-intro">Código existente não equivale a integração completa validada. Os testes anteriores descritos no relatório são curtos, com arquivo e RTSP local; não comprovam câmera real contínua, recuperação de perdas nem gravação.</p>
+      <div class="status-grid">
+        <div class="status-card">
+          <span class="status-label">Existe · integração atual pendente</span>
+          <h3>MOG2</h3>
+          <p>A classe aplica MOG2 à imagem da GPU. Há uma chamada no <code>main</code>, mas ele conserva chamadas da API antiga do buffer e não foi validado como aplicação completa nesta etapa.</p>
+          <p class="source-ref">Mog2MotionDetector.cpp:56–66; main.cpp:115–124.</p>
+        </div>
+        <div class="status-card">
+          <span class="status-label">Construtor + inserção + retirada</span>
+          <h3>EncodedVideoBuffer</h3>
+          <p>O construtor guarda o limite e rejeita zero, sem reservar imagens. <code>appendReadPackets()</code> preserva um objeto por leitura. <code>takeBufferedReadPackets()</code> usa <code>swap()</code> para transferir as coleções e deixar o buffer vazio, com contagem zero e o mesmo limite. Aceita retirada parcial e devolve um vetor vazio quando não há leituras. Os resultados mantêm os pacotes e a configuração vivos independentemente do buffer. Ainda não há integração com o <code>main</code> nem gravador MP4.</p>
+          <p class="source-ref">EncodedVideoBuffer.hpp:10–20; EncodedVideoBuffer.cpp:6–31.</p>
+        </div>
+        <div class="status-card">
+          <span class="status-label">Planejado · não implementado</span>
+          <h3>Remux para MP4</h3>
+          <p>Pacotes, parâmetros de codec e base de tempo são insumos para essa etapa futura. Ainda faltam o muxer, o tratamento de timestamps e limites reproduzíveis e a finalização do arquivo.</p>
+          <p class="source-ref">relatorio12out.md, seção 6; não há gravação neste percurso ilustrado.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="references-heading">
+      <h2 id="references-heading">Referências para aprofundar</h2>
+      <ul class="references">
+        <li><a href="https://docs.opencv.org/4.10.0/d0/d61/group__cudacodec.html" target="_blank" rel="noopener noreferrer">OpenCV 4.10 — cudacodec e propriedades raw</a>: contrato de <code>PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB</code>.</li>
+        <li><a href="https://ffmpeg.org/ffmpeg-bitstream-filters.html#h264_005fmp4toannexb" target="_blank" rel="noopener noreferrer">FFmpeg — h264_mp4toannexb</a>: adaptação de bitstream sem decodificação.</li>
+        <li><a href="https://ffmpeg.org/doxygen/6.1/group__lavc__packet.html" target="_blank" rel="noopener noreferrer">FFmpeg — funções de AVPacket</a>: referências, clone e liberação.</li>
+        <li><a href="https://ffmpeg.org/ffmpeg-formats.html#segment" target="_blank" rel="noopener noreferrer">FFmpeg — segmentação</a>: limites, keyframes e GOPs.</li>
+      </ul>
+    </section>
+    <footer>
+      <p>Fotografia do working tree em 12/10/2026, não apenas do commit indicado. As linhas podem mudar com o desenvolvimento. Os trechos estão embutidos para que esta página continue legível quando compartilhada sem o repositório.</p>
+      <p>Funciona offline, sem bibliotecas externas. Para apresentar, use o mapa e os botões. Para imprimir, use a impressão do navegador: todas as etapas serão incluídas.</p>
+    </footer>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+      const flowRoot = document.getElementById("rtsp-flow");
+      const stepDetails = Array.from(flowRoot.querySelectorAll(".step-detail"));
+      const stepButtons = Array.from(flowRoot.querySelectorAll("[data-select-step]"));
+      const navigation = document.getElementById("step-navigation");
+      const previousButton = document.getElementById("previous-step");
+      const nextButton = document.getElementById("next-step");
+      const stepStatus = document.getElementById("step-status");
+      let selectedStepIndex = 0;
+
+      function selectFlowStep(stepIndex) {
+        if (!Number.isInteger(stepIndex) || stepIndex < 0 || stepIndex >= stepDetails.length) {
+          return;
+        }
+        selectedStepIndex = stepIndex;
+        stepDetails.forEach((detail, index) => {
+          detail.hidden = index !== selectedStepIndex;
+        });
+        stepButtons.forEach((button) => {
+          const selected = Number(button.dataset.selectStep) === selectedStepIndex + 1;
+          button.setAttribute("aria-pressed", String(selected));
+        });
+        previousButton.disabled = selectedStepIndex === 0;
+        nextButton.disabled = selectedStepIndex === stepDetails.length - 1;
+        stepStatus.textContent = "Etapa " + (selectedStepIndex + 1) + " de " + stepDetails.length
+          + " · " + stepDetails[selectedStepIndex].dataset.stepTitle;
+      }
+
+      stepButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          selectFlowStep(Number(button.dataset.selectStep) - 1);
+          if (window.matchMedia("(max-width: 940px)").matches) {
+            document.getElementById("etapas").scrollIntoView({ block: "start" });
+          }
+        });
+      });
+      previousButton.addEventListener("click", () => selectFlowStep(selectedStepIndex - 1));
+      nextButton.addEventListener("click", () => selectFlowStep(selectedStepIndex + 1));
+      selectFlowStep(0);
+      navigation.hidden = false;
+    })();
+  </script>
+</body>
+</html>
