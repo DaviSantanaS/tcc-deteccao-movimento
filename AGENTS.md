@@ -151,13 +151,13 @@ Essa ordem pode ser ajustada se o código real demonstrar uma dependência difer
 
 Não implementar ainda:
 
-- remux;
-- gravação em MP4;
-- transcoding;
-- buffer de 1000 frames;
 - agrupamento definitivo em frames codificados;
 - toda a classe `FfmpegRawVideoSource` de uma vez;
 - refatorações não relacionadas ao método atual.
+
+Transcoding é proibido no caminho de gravação. O remux e a gravação em MP4 podem ser desenvolvidos somente em etapas individualmente aprovadas; esta etapa autoriza apenas a transferência das coleções do buffer e o reinício de sua contagem, não a implementação do gravador.
+
+O buffer de pacotes codificados, inicialmente limitado por 1000 leituras bem-sucedidas de frames decodificados, pode ser desenvolvido incrementalmente. Cada etapa deve autorizar apenas um método ou pequena unidade conceitual; a primeira abrange somente o estado inicial, o construtor e seu teste.
 
 ## Qualidade do código
 
