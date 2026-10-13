@@ -64,3 +64,48 @@ AvBitstreamFilterPtr createH264AnnexBFilter(
 
     return filter_context;
 }
+
+std::vector<AvPacketPtr> filterH264PacketToAnnexB(
+    AVBSFContext& initialized_filter_context,
+    const AVPacket& encoded_packet
+) {
+    if (encoded_packet.data == nullptr || encoded_packet.size <= 0) {
+        throw std::invalid_argument("A filtragem requer um pacote codificado com dados.");
+    }
+
+    AvPacketPtr filter_input_packet = cloneAvPacket(encoded_packet);
+    const int packet_send_result = av_bsf_send_packet(
+        &initialized_filter_context,
+        filter_input_packet.get()
+    );
+    if (packet_send_result == AVERROR(EAGAIN)) {
+        throw std::runtime_error("O filtro H.264 precisa ser drenado antes de receber outro pacote.");
+    }
+    if (packet_send_result < 0) {
+        throw std::runtime_error(
+            "Nao foi possivel enviar o pacote ao filtro H.264: erro " +
+            std::to_string(packet_send_result)
+        );
+    }
+
+    std::vector<AvPacketPtr> filtered_packets;
+    while (true) {
+        AvPacketPtr filtered_packet = allocateAvPacket();
+        const int packet_receive_result = av_bsf_receive_packet(
+            &initialized_filter_context,
+            filtered_packet.get()
+        );
+        if (packet_receive_result == AVERROR(EAGAIN) || packet_receive_result == AVERROR_EOF) {
+            return filtered_packets;
+        }
+        if (packet_receive_result < 0) {
+            throw std::runtime_error(
+                "Nao foi possivel receber o pacote do filtro H.264: erro " +
+                std::to_string(packet_receive_result)
+            );
+        }
+
+        filtered_packet->time_base = initialized_filter_context.time_base_out;
+        filtered_packets.push_back(std::move(filtered_packet));
+    }
+}
