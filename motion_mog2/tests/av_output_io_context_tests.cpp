@@ -21,8 +21,10 @@
 extern "C" {
 #include <libavcodec/defs.h>
 #include <libavutil/avutil.h>
+#include <libavutil/buffer.h>
 #include <libavutil/error.h>
 #include <libavutil/macros.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 }
 
@@ -697,6 +699,210 @@ int main() {
             if (openFileDescriptorCount() != initial_descriptor_count) {
                 throw std::runtime_error("A falha injetada de trailer nao deve deixar descritores abertos.");
             }
+
+            const auto create_source_packet = [&](int packet_index) {
+                auto packet = allocateAvPacket();
+                if (av_new_packet(packet.get(), static_cast<int>(sizeof(synthetic_avcc_payload))) < 0) {
+                    throw std::runtime_error("Nao foi possivel alocar o pacote original da colecao de teste.");
+                }
+                std::copy(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload), packet->data);
+                packet->data[5] = static_cast<unsigned char>(0x88 + packet_index);
+                packet->pts = packet_index * 3000;
+                packet->dts = packet_index * 3000;
+                packet->duration = 3000;
+                packet->time_base = header_video_stream_parameters.packet_timestamp_time_base;
+                packet->stream_index = 5;
+                packet->pos = 12345;
+                packet->flags = AV_PKT_FLAG_KEY;
+                return packet;
+            };
+            const auto create_source_collections = [&](const std::shared_ptr<const VideoStreamParameters>& parameters) {
+                std::vector<EncodedVideoPackets> read_packets(3);
+                read_packets[0].video_stream_parameters = parameters;
+                read_packets[2].video_stream_parameters = parameters;
+                read_packets[0].encoded_packets.push_back(create_source_packet(0));
+                read_packets[0].encoded_packets.push_back(create_source_packet(1));
+                read_packets[2].encoded_packets.push_back(create_source_packet(2));
+                read_packets[2].encoded_packets.push_back(create_source_packet(3));
+                return read_packets;
+            };
+            const auto expect_collection_rejection = [](
+                AVFormatContext& context, std::vector<EncodedVideoPackets> read_packets
+            ) {
+                AVIOContext* previous_io_context = context.pb;
+                void* previous_private_data = context.priv_data;
+                const auto previous_io_position = context.pb ? avio_tell(context.pb) : 0;
+                bool rejected = false;
+                try {
+                    writeMp4Packets(context, std::move(read_packets));
+                } catch (const std::invalid_argument&) {
+                    rejected = true;
+                }
+                if (!rejected || context.pb != previous_io_context || context.priv_data != previous_private_data ||
+                    (context.pb && avio_tell(context.pb) != previous_io_position)) {
+                    throw std::runtime_error("Uma colecao invalida deve ser rejeitada inteira antes de escrever pacotes.");
+                }
+            };
+
+            const auto collection_file_path = test_directory.path() / "packet-collections.mp4";
+            AVRational collection_output_time_base{};
+            auto collection_source_parameters = std::make_shared<const VideoStreamParameters>(
+                *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
+            );
+            const std::weak_ptr<const VideoStreamParameters> transferred_parameters = collection_source_parameters;
+            auto source_collections = create_source_collections(collection_source_parameters);
+            auto retained_packet = cloneAvPacket(*source_collections[0].encoded_packets[0]);
+            {
+                auto collection_io_context = openOutputFile(collection_file_path);
+                auto collection_format_context = allocateMp4OutputContext();
+                AVStream& collection_stream = createMp4VideoStream(
+                    *collection_format_context, *collection_source_parameters
+                );
+                collection_stream.time_base = {1, 30000};
+                writeMp4Header(*collection_format_context, collection_io_context);
+                collection_output_time_base = collection_stream.time_base;
+                if (av_cmp_q(collection_output_time_base,
+                             header_video_stream_parameters.packet_timestamp_time_base) == 0) {
+                    throw std::runtime_error("O teste da colecao deve converter para uma base de tempo diferente da fonte.");
+                }
+                const auto io_position_before_empty_collections = avio_tell(collection_io_context.get());
+                writeMp4Packets(*collection_format_context, {});
+                std::vector<EncodedVideoPackets> empty_read_groups(2);
+                writeMp4Packets(*collection_format_context, std::move(empty_read_groups));
+                if (avio_tell(collection_io_context.get()) != io_position_before_empty_collections) {
+                    throw std::runtime_error("Colecao vazia e leituras sem pacotes nao devem escrever bytes.");
+                }
+                collection_source_parameters.reset();
+                writeMp4Packets(*collection_format_context, std::move(source_collections));
+                if (!transferred_parameters.expired() || retained_packet->pts != 0 || retained_packet->dts != 0 ||
+                    retained_packet->stream_index != 5 || retained_packet->pos != 12345 ||
+                    av_cmp_q(retained_packet->time_base, header_video_stream_parameters.packet_timestamp_time_base) != 0 ||
+                    !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload), retained_packet->data)) {
+                    throw std::runtime_error("A colecao deve liberar seus parametros sem alterar bytes compartilhados ou metadados do clone de teste.");
+                }
+                writeMp4Trailer(*collection_format_context);
+                expect_collection_rejection(*collection_format_context, {});
+            }
+            if (openFileDescriptorCount() != initial_descriptor_count ||
+                av_buffer_get_ref_count(retained_packet->buf) != 1) {
+                throw std::runtime_error("A escrita da colecao nao deve manter descritores nem referencias extras ao payload.");
+            }
+            retained_packet.reset();
+            {
+                AVFormatContext* opened_collection_input = nullptr;
+                const int open_collection_result = avformat_open_input(
+                    &opened_collection_input, collection_file_path.c_str(), nullptr, nullptr
+                );
+                const auto close_input = [](AVFormatContext* input) { avformat_close_input(&input); };
+                const std::unique_ptr<AVFormatContext, decltype(close_input)> collection_input{
+                    opened_collection_input, close_input
+                };
+                if (open_collection_result < 0 || !collection_input || collection_input->nb_streams != 1 ||
+                    collection_input->streams[0]->nb_frames != 4 ||
+                    av_cmp_q(collection_input->streams[0]->time_base, collection_output_time_base) != 0) {
+                    throw std::runtime_error("O MP4 da colecao deve reabrir com quatro amostras na base de tempo da saida.");
+                }
+                // Os quatro payloads sinteticos verificam demux e ordenacao, nao decodificacao.
+                collection_input->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+                auto read_packet = allocateAvPacket();
+                for (int packet_index = 0; packet_index < 4; ++packet_index) {
+                    const int packet_read_result = av_read_frame(collection_input.get(), read_packet.get());
+                    const auto expected_timestamp = av_rescale_q(
+                        packet_index * 3000, header_video_stream_parameters.packet_timestamp_time_base,
+                        collection_output_time_base
+                    );
+                    const auto expected_duration = av_rescale_q(
+                        3000, header_video_stream_parameters.packet_timestamp_time_base, collection_output_time_base
+                    );
+                    if (packet_read_result < 0 || !read_packet->data ||
+                        read_packet->size != static_cast<int>(sizeof(synthetic_avcc_payload)) ||
+                        !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload) - 1, read_packet->data) ||
+                        read_packet->data[5] != static_cast<unsigned char>(0x88 + packet_index) ||
+                        read_packet->stream_index != 0 || read_packet->pts != expected_timestamp ||
+                        read_packet->dts != expected_timestamp || read_packet->duration != expected_duration) {
+                        throw std::runtime_error("Os quatro pacotes devem manter bytes e ordem, com timestamps e duracao convertidos.");
+                    }
+                    av_packet_unref(read_packet.get());
+                }
+                if (av_read_frame(collection_input.get(), read_packet.get()) != AVERROR_EOF) {
+                    throw std::runtime_error("A colecao deve gravar exatamente os quatro pacotes fornecidos.");
+                }
+            }
+            if (openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("O demux da colecao nao deve deixar descritores abertos.");
+            }
+
+            auto validation_source_parameters = std::make_shared<const VideoStreamParameters>(
+                *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
+            );
+            {
+                auto rejected_collection_io = openOutputFile(test_directory.path() / "rejected-collections.mp4");
+                auto rejected_collection_context = create_video_output_context();
+                expect_collection_rejection(*rejected_collection_context, {});
+                writeMp4Header(*rejected_collection_context, rejected_collection_io);
+                auto missing_parameters = create_source_collections(validation_source_parameters);
+                missing_parameters[2].video_stream_parameters.reset();
+                expect_collection_rejection(*rejected_collection_context, std::move(missing_parameters));
+                auto different_parameters = create_source_collections(validation_source_parameters);
+                different_parameters[2].video_stream_parameters = std::make_shared<const VideoStreamParameters>(
+                    *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
+                );
+                expect_collection_rejection(*rejected_collection_context, std::move(different_parameters));
+                auto null_packet = create_source_collections(validation_source_parameters);
+                null_packet[2].encoded_packets.back().reset();
+                expect_collection_rejection(*rejected_collection_context, std::move(null_packet));
+                auto incompatible_time_base = create_source_collections(validation_source_parameters);
+                incompatible_time_base[2].encoded_packets.back()->time_base = {1, 1000};
+                expect_collection_rejection(*rejected_collection_context, std::move(incompatible_time_base));
+                auto unknown_timestamp = create_source_collections(validation_source_parameters);
+                unknown_timestamp[2].encoded_packets.back()->pts = AV_NOPTS_VALUE;
+                expect_collection_rejection(*rejected_collection_context, std::move(unknown_timestamp));
+                auto missing_payload = create_source_collections(validation_source_parameters);
+                av_packet_unref(missing_payload[2].encoded_packets.back().get());
+                expect_collection_rejection(*rejected_collection_context, std::move(missing_payload));
+            }
+            const std::string rejected_collection_contents = readFileContents(test_directory.path() / "rejected-collections.mp4");
+            if (rejected_collection_contents.find(expected_packet_contents) != std::string::npos ||
+                openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("Um erro no ultimo grupo nao deve permitir escrever os pacotes anteriores.");
+            }
+
+            const auto failed_collection_path = test_directory.path() / "failed-collection-partial.mp4";
+            {
+                auto failed_collection_io = openOutputFile(failed_collection_path);
+                auto failed_collection_context = create_video_output_context();
+                writeMp4Header(*failed_collection_context, failed_collection_io);
+                auto failed_collections = create_source_collections(validation_source_parameters);
+                failed_collections[0].encoded_packets[1]->pts = 0;
+                auto retained_unwritten_packet = cloneAvPacket(*failed_collections[2].encoded_packets[0]);
+                bool collection_failure_reported = false;
+                try {
+                    writeMp4Packets(*failed_collection_context, std::move(failed_collections));
+                } catch (const std::runtime_error& error) {
+                    collection_failure_reported = std::string(error.what()).find("erro -") != std::string::npos;
+                }
+                if (!collection_failure_reported || av_buffer_get_ref_count(retained_unwritten_packet->buf) != 1) {
+                    throw std::runtime_error("O erro no segundo pacote deve interromper a colecao e liberar pacotes nao escritos.");
+                }
+                failed_collection_context.reset();
+                if (!failed_collection_io || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    throw std::runtime_error("O contexto da colecao com erro deve ser descartado antes de fechar o I/O.");
+                }
+            }
+            const std::string failed_collection_contents = readFileContents(failed_collection_path);
+            std::string second_packet_contents = expected_packet_contents;
+            second_packet_contents[5] = static_cast<char>(0x89);
+            std::string third_packet_contents = expected_packet_contents;
+            third_packet_contents[5] = static_cast<char>(0x8a);
+            std::string fourth_packet_contents = expected_packet_contents;
+            fourth_packet_contents[5] = static_cast<char>(0x8b);
+            if (failed_collection_contents.find(expected_packet_contents) == std::string::npos ||
+                failed_collection_contents.find(second_packet_contents) != std::string::npos ||
+                failed_collection_contents.find(third_packet_contents) != std::string::npos ||
+                failed_collection_contents.find(fourth_packet_contents) != std::string::npos ||
+                openFileDescriptorCount() != initial_descriptor_count) {
+                throw std::runtime_error("A saida parcial deve conter somente o primeiro pacote, sem escritas apos a falha.");
+            }
         }
         if (std::filesystem::exists(test_directory_path)) {
             throw std::runtime_error("A pasta temporaria do teste nao foi removida: " + test_directory_path.string());
@@ -712,6 +918,9 @@ int main() {
         std::cout << "PASS: trailer MP4 com moov; mesmos bytes recuperados por demux sem decodificacao.\n";
         std::cout << "PASS: trailer desassocia pb sem fechar I/O; novas escritas e finalizacoes rejeitadas.\n";
         std::cout << "PASS: precondicoes preservam contexto; falha injetada no trailer tratada sem descritores restantes.\n";
+        std::cout << "PASS: colecoes 2/0/2 transferidas por movimento; quatro pacotes com bytes, ordem e timestamps corretos apos demux.\n";
+        std::cout << "PASS: colecoes vazias sem escrita; validacao completa rejeita erro no ultimo grupo antes de escrever.\n";
+        std::cout << "PASS: falha no segundo pacote interrompe escrita e libera a colecao sem descritores ou referencias extras.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

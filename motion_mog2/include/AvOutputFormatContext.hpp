@@ -1,12 +1,14 @@
 #pragma once
 
 #include "AvOutputIoContext.hpp"
+#include "EncodedVideoPackets.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
 }
 
 #include <memory>
+#include <vector>
 
 struct VideoStreamParameters;
 
@@ -40,6 +42,15 @@ void writeMp4Header(
 void writeMp4Packet(
     AVFormatContext& mp4_output_context,
     AVPacket& encoded_packet
+);
+
+// Exige cabecalho inicializado com os parametros da fonte e I/O ainda vivo.
+// No MVP, leituras com pacotes devem compartilhar a mesma instancia de parametros.
+// A colecao transferida e liberada mesmo em falha de validacao.
+// Falha de escrita pode deixar saida parcial: descarte o contexto sem tentar novamente.
+void writeMp4Packets(
+    AVFormatContext& mp4_output_context,
+    std::vector<EncodedVideoPackets> encoded_video_packets_by_read
 );
 
 // Exige cabecalho escrito com sucesso e nenhuma falha anterior de gravacao.
