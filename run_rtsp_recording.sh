@@ -10,3 +10,8 @@ show_usage() {
     'MEDIAMTX_BIN e OPENCV_DIR permitem ajustar os caminhos das dependencias.' \
     'Ctrl+C finaliza o gravador antes de encerrar a transmissao. MP4s e logs sao preservados.'
 }
+
+fail() {
+  printf '[fatal] %s\n' "$*" >&2
+  exit 1
+}
