@@ -15,3 +15,7 @@ fail() {
   printf '[fatal] %s\n' "$*" >&2
   exit 1
 }
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "Comando nao encontrado: $1"
+}
