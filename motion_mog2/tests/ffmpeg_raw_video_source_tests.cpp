@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
         }
 
         std::vector<AvPacketPtr> pending_packets =
-            valid_source.takePendingPackets(3);
+            valid_source.dequeueEncodedPackets(3);
         if (pending_packets.size() != 3) {
             std::cerr << "A quantidade de pacotes pendentes esta incorreta.\n";
             return 1;
@@ -112,7 +112,7 @@ int main(int argc, char** argv) {
         }
 
         try {
-            valid_source.takePendingPackets(1);
+            valid_source.dequeueEncodedPackets(1);
             std::cerr << "A fila vazia aceitou a retirada de outro pacote.\n";
             return 1;
         } catch (const std::runtime_error&) {

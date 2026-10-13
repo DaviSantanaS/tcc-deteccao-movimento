@@ -28,7 +28,7 @@ public:
     bool lastPacketContainsKeyFrame() const override;
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
-    std::vector<AvPacketPtr> takePendingPackets(std::size_t packet_count);
+    std::vector<AvPacketPtr> dequeueEncodedPackets(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
 

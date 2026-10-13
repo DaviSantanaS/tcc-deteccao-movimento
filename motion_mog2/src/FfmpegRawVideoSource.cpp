@@ -261,7 +261,7 @@ bool FfmpegRawVideoSource::getNextPacket(
     }
 }
 
-std::vector<AvPacketPtr> FfmpegRawVideoSource::takePendingPackets(
+std::vector<AvPacketPtr> FfmpegRawVideoSource::dequeueEncodedPackets(
     std::size_t packet_count
 ) {
     std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
