@@ -21,3 +21,11 @@ bool EncodedVideoBuffer::appendReadPackets(EncodedVideoPackets&& encoded_video_p
     ++buffered_decoded_frame_count_;
     return buffered_decoded_frame_count_ == max_decoded_frame_count_;
 }
+
+std::vector<EncodedVideoPackets>
+EncodedVideoBuffer::takeBufferedReadPackets() {
+    std::vector<EncodedVideoPackets> transferred_read_packets;
+    transferred_read_packets.swap(encoded_video_packets_by_read_);
+    buffered_decoded_frame_count_ = 0;
+    return transferred_read_packets;
+}

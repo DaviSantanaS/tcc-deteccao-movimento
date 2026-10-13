@@ -11,6 +11,9 @@ public:
 
     bool appendReadPackets(EncodedVideoPackets&& encoded_video_packets);
 
+    [[nodiscard]]
+    std::vector<EncodedVideoPackets> takeBufferedReadPackets();
+
 private:
     std::size_t max_decoded_frame_count_;
     std::size_t buffered_decoded_frame_count_ = 0;
