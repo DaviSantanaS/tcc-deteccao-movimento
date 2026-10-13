@@ -153,6 +153,10 @@ void FfmpegRawVideoSource::updateFormat(
     video_format.valid = true;
 }
 
+bool FfmpegRawVideoSource::lastPacketContainsKeyFrame() const {
+    return (current_encoded_frame_packet->flags & AV_PKT_FLAG_KEY) != 0;
+}
+
 void FfmpegRawVideoSource::copyCodecExtraDataFromStream() {
     const AVCodecParameters* codec_parameters =
         encoded_video_stream->codecpar;
