@@ -73,3 +73,22 @@ wait_for_rtsp_server() {
   done
   fail "MediaMTX nao abriu o RTSP em 15 segundos. Consulte ${run_directory}/mediamtx.log"
 }
+
+wait_for_h264_publication() {
+  local deadline=$((SECONDS + 15)) codec_name remaining_seconds probe_timeout
+  while (( SECONDS < deadline )); do
+    kill -0 "${mediamtx_pid}" 2>/dev/null || fail 'MediaMTX encerrou durante a publicacao.'
+    kill -0 "${publisher_pid}" 2>/dev/null || fail "FFmpeg encerrou. Consulte ${run_directory}/ffmpeg.log"
+    remaining_seconds=$((deadline - SECONDS))
+    probe_timeout=3
+    (( remaining_seconds >= probe_timeout )) || probe_timeout="${remaining_seconds}"
+    if codec_name="$(timeout -k 1 "${probe_timeout}" ffprobe -v error \
+        -rtsp_transport "${rtsp_transport}" -select_streams v:0 \
+        -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 \
+        "${rtsp_url}" 2>>"${run_directory}/readiness.log")" && [[ "${codec_name}" == h264 ]]; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  fail "Publicacao H.264 nao ficou pronta em 15 segundos. Consulte ${run_directory}/ffmpeg.log"
+}
