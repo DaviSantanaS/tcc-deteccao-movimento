@@ -190,12 +190,16 @@ void testHistorySurvivesPreviousEvent() {
     const auto complete = buffer.finishMotion();
     require(complete.encoded_packet_count == 171, "Evento deve conter 60..230 uma vez.");
     require(complete.encoded_byte_count == expectedBytes(60, 230), "Bytes do evento ativo.");
-    require(buffer.currentMotionInfo().encoded_packet_count == 0, "Limpar apenas o evento.");
+    require(buffer.currentMotionInfo().encoded_packet_count == 171, "Preservar o evento finalizado.");
+    require(buffer.currentMotionInfo().encoded_byte_count == expectedBytes(60, 230),
+            "Preservar os bytes do evento finalizado.");
 
     feed(buffer, 231, 231);
     const auto next = buffer.startMotion(231, {makePacket(231, false)});
     require(next.start_decoded_frame_index == 120, "Historico deve sobreviver ao evento.");
     require(next.gop_encoded_packet_count == 112, "Historico do segundo evento incorreto.");
+    require(buffer.currentMotionInfo().encoded_packet_count == 112,
+            "Substituir o evento finalizado somente no proximo inicio.");
 }
 
 void testExpiredGopsAreDiscarded() {
@@ -221,6 +225,15 @@ void testSharedPacketOwnership() {
     preserved.packet.reset();
     require(original_packet.expired(), "Liberar o pacote depois da ultima referencia.");
 
+    EncodedVideoBuffer buffer;
+    EncodedPacket first_event_packet = makePacket(0, true);
+    std::weak_ptr<const AVPacket> retained_packet = first_event_packet.packet;
+    buffer.startMotion(0, {first_event_packet});
+    first_event_packet.packet.reset();
+    buffer.finishMotion();
+    require(!retained_packet.expired(), "MOTION_OFF nao deve liberar o ultimo evento.");
+    buffer.startMotion(1, {makePacket(1, true)});
+    require(retained_packet.expired(), "O proximo inicio deve liberar o evento anterior.");
 }
 
 void testInvalidPacketsAreRejected() {
