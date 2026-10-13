@@ -22,6 +22,7 @@ add_executable(
         src/AvCodecParameters.cpp
         src/AvBitstreamFilter.cpp
         src/VideoStreamParameters.cpp
+        src/FfmpegRawVideoSource.cpp
 )
 
 target_include_directories(
@@ -117,5 +118,29 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME encoded_video_packets_tests COMMAND encoded_video_packets_tests)
+
+    add_executable(
+            ffmpeg_video_stream_parameters_tests
+            tests/ffmpeg_video_stream_parameters_tests.cpp
+            src/AvBitstreamFilter.cpp
+            src/FfmpegRawVideoSource.cpp
+            src/AvPacket.cpp
+            src/AvCodecParameters.cpp
+            src/VideoStreamParameters.cpp
+    )
+
+    target_include_directories(
+            ffmpeg_video_stream_parameters_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            ffmpeg_video_stream_parameters_tests
+            PRIVATE
+            ${OpenCV_LIBS}
+            PkgConfig::LIBAVCODEC
+            PkgConfig::LIBAVFORMAT
+            PkgConfig::LIBAVUTIL
+    )
 
 endif()

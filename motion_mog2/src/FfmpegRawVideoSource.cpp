@@ -41,6 +41,11 @@ FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_url)
     copyCodecExtraDataFromStream();
 }
 
+std::shared_ptr<const VideoStreamParameters>
+FfmpegRawVideoSource::videoStreamParameters() const {
+    return video_stream_parameters;
+}
+
 void FfmpegRawVideoSource::openInput(const std::string& input_url) {
     AVFormatContext* opened_input_format_context = nullptr;
     const int open_input_result = avformat_open_input(

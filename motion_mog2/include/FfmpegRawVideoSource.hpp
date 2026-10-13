@@ -26,6 +26,8 @@ public:
     bool getNextPacket(unsigned char** data, std::size_t* size);
     std::vector<AvPacketPtr> takePendingPackets(std::size_t packet_count);
 
+    std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
+
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource(FfmpegRawVideoSource&&) = delete;
