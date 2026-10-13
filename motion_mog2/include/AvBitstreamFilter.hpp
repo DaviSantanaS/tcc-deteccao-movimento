@@ -15,3 +15,8 @@ struct AvBitstreamFilterDeleter {
 
 using AvBitstreamFilterPtr =
     std::unique_ptr<AVBSFContext, AvBitstreamFilterDeleter>;
+
+[[nodiscard]] AvBitstreamFilterPtr createH264AnnexBFilter(
+    const AVCodecParameters& source_codec_parameters,
+    AVRational packet_timestamp_time_base
+);

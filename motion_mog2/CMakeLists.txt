@@ -20,6 +20,7 @@ add_executable(
         src/PreEventConfig.cpp
         src/AvPacket.cpp
         src/AvCodecParameters.cpp
+        src/AvBitstreamFilter.cpp
         src/VideoStreamParameters.cpp
 )
 
