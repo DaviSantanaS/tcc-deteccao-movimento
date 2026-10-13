@@ -14,3 +14,7 @@ struct AvOutputIoContextDeleter {
 
 using AvOutputIoContextPtr =
     std::unique_ptr<AVIOContext, AvOutputIoContextDeleter>;
+
+[[nodiscard]] AvOutputIoContextPtr openOutputFile(
+    const std::filesystem::path& output_file_path
+);
