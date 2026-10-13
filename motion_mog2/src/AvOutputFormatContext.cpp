@@ -87,3 +87,45 @@ AVStream& createMp4VideoStream(
     output_stream->time_base = video_stream_parameters.packet_timestamp_time_base;
     return *output_stream;
 }
+
+void writeMp4Header(
+    AVFormatContext& mp4_output_context,
+    const AvOutputIoContextPtr& output_io_context
+) {
+    if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
+        std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||
+        mp4_output_context.iformat != nullptr || mp4_output_context.pb != nullptr ||
+        mp4_output_context.nb_streams != 1 || !mp4_output_context.streams ||
+        !mp4_output_context.streams[0]) {
+        throw std::invalid_argument("O contexto deve ser MP4 com uma stream e sem I/O associado.");
+    }
+
+    const AVStream& video_output_stream = *mp4_output_context.streams[0];
+    const AVCodecParameters* output_codec_parameters = video_output_stream.codecpar;
+    if (!output_codec_parameters || output_codec_parameters->codec_type != AVMEDIA_TYPE_VIDEO ||
+        output_codec_parameters->codec_id != AV_CODEC_ID_H264 ||
+        output_codec_parameters->width <= 0 || output_codec_parameters->height <= 0 ||
+        video_output_stream.time_base.num <= 0 || video_output_stream.time_base.den <= 0 ||
+        output_codec_parameters->extradata_size < 0 ||
+        (output_codec_parameters->extradata_size > 0 && !output_codec_parameters->extradata)) {
+        throw std::invalid_argument("A stream H.264 deve ter parametros, resolucao, base de tempo e extradata coerentes.");
+    }
+    if (!output_io_context || !output_io_context->write_flag ||
+        !(output_io_context->seekable & AVIO_SEEKABLE_NORMAL) || output_io_context->error < 0) {
+        throw std::invalid_argument("O I/O deve estar aberto para escrita, permitir seek e nao ter erro anterior.");
+    }
+
+    mp4_output_context.pb = output_io_context.get();
+    // O muxer pode alterar time_base; os pacotes devem usar o valor resultante.
+    const int header_write_result = avformat_write_header(&mp4_output_context, nullptr);
+    if (header_write_result < 0) {
+        throw std::runtime_error(
+            "Nao foi possivel escrever o cabecalho MP4: erro " + std::to_string(header_write_result)
+        );
+    }
+    if (output_io_context->error < 0) {
+        throw std::runtime_error(
+            "O I/O falhou ao escrever o cabecalho MP4: erro " + std::to_string(output_io_context->error)
+        );
+    }
+}

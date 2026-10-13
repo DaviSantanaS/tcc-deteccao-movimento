@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AvOutputIoContext.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -24,4 +25,11 @@ using AvOutputFormatContextPtr =
 [[nodiscard]] AVStream& createMp4VideoStream(
     AVFormatContext& mp4_output_context,
     const VideoStreamParameters& video_stream_parameters
+);
+
+// pb referencia o I/O: mantenha-o vivo ate liberar o contexto MP4.
+// Em falha FFmpeg, descarte o contexto antes de fechar o I/O.
+void writeMp4Header(
+    AVFormatContext& mp4_output_context,
+    const AvOutputIoContextPtr& output_io_context
 );
