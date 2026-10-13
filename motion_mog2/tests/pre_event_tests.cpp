@@ -2,11 +2,13 @@
 #include "PreEventConfig.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 void require(bool condition, const std::string& message) {
     if (!condition) {
@@ -25,8 +27,20 @@ void requireFailure(const std::function<void()>& operation) {
 }
 
 EncodedPacket makePacket(uint64_t index, bool key_frame) {
+    AvPacketPtr av_packet = allocateAvPacket();
+    const int packet_size = static_cast<int>(index % 7 + 1);
+    if (av_new_packet(av_packet.get(), packet_size) < 0) {
+        throw std::runtime_error("Nao foi possivel alocar o payload do teste.");
+    }
+    std::memset(av_packet->data, static_cast<unsigned char>(index % 256), packet_size);
+    av_packet->pts = static_cast<int64_t>(index);
+    av_packet->dts = static_cast<int64_t>(index);
+    av_packet->duration = 1;
+    av_packet->time_base = AVRational{1, 100};
+    av_packet->flags = key_frame ? AV_PKT_FLAG_KEY : 0;
+
     EncodedPacket packet;
-    packet.data.assign(index % 7 + 1, static_cast<unsigned char>(index % 256));
+    packet.packet = std::shared_ptr<const AVPacket>(std::move(av_packet));
     packet.has_key_frame = key_frame;
     packet.received_at = std::chrono::steady_clock::time_point{} +
         std::chrono::milliseconds(index * 10);
@@ -192,6 +206,29 @@ void testExpiredGopsAreDiscarded() {
     require(info.gop_encoded_packet_count == 141, "Nao acumular GOPs expirados.");
 }
 
+void testSharedPacketOwnership() {
+    EncodedPacket original = makePacket(42, true);
+    EncodedPacket preserved = original;
+    std::weak_ptr<const AVPacket> original_packet = original.packet;
+    original.packet.reset();
+    require(preserved.packet->data[0] == 42, "Payload deve sobreviver a liberacao da origem.");
+    require(preserved.packet->pts == 42 && preserved.packet->dts == 42 &&
+                preserved.packet->duration == 1,
+            "Preservar timestamps e duracao do AVPacket.");
+    require(preserved.packet->time_base.num == 1 && preserved.packet->time_base.den == 100,
+            "Preservar a base de tempo.");
+    require((preserved.packet->flags & AV_PKT_FLAG_KEY) != 0, "Preservar a flag de keyframe.");
+    preserved.packet.reset();
+    require(original_packet.expired(), "Liberar o pacote depois da ultima referencia.");
+
+}
+
+void testInvalidPacketsAreRejected() {
+    EncodedVideoBuffer buffer;
+    requireFailure([&] { buffer.updatePreEventBuffer({EncodedPacket{}}, 0); });
+    requireFailure([&] { buffer.appendMotionPackets({EncodedPacket{}}); });
+}
+
 int main() {
     try {
         testSecondsConversion();
@@ -204,7 +241,9 @@ int main() {
         testSeveralKeyframesInOneBatch();
         testHistorySurvivesPreviousEvent();
         testExpiredGopsAreDiscarded();
-        std::cout << "PASS: 10 grupos de testes de pre-evento.\n";
+        testSharedPacketOwnership();
+        testInvalidPacketsAreRejected();
+        std::cout << "PASS: 12 grupos de testes de pre-evento e ownership.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;
