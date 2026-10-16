@@ -2,8 +2,6 @@
 #include "AvOutputIoContext.hpp"
 #include "EncodedVideoBuffer.hpp"
 #include "EncodedVideoPackets.hpp"
-#include "Mog2MotionDetector.hpp"
-#include "PreEventConfig.hpp"
 #include "VideoStreamReader.hpp"
 
 #include <opencv2/core/cuda.hpp>
@@ -21,7 +19,6 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -34,13 +31,6 @@ void handle_signal(int) {
 int main(int argc, char** argv) {
     const bool show_help = argc == 2 &&
         (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h");
-    /*
-    if (show_help || argc > 6) {
-        std::cout << "Uso: motion_mog2 [rtsp_url] [motion_threshold_percent] "
-                     "[motion_start_frames] [motion_end_frames] [pre_event_seconds]\n";
-        return show_help ? 0 : 1;
-    }
-    */
     if (show_help || argc > 4) {
         std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [leituras_por_trecho]\n"
                      "Padrao: rtsp://127.0.0.1:8554/video ./recordings 1000\n"
@@ -54,17 +44,6 @@ int main(int argc, char** argv) {
     try {
         const std::string input_source =
             (argc > 1) ? argv[1] : "rtsp://127.0.0.1:8554/video";
-        /*
-        const double motion_threshold_percent =
-            (argc > 2) ? std::stod(argv[2]) : 1.0;
-        const int motion_start_frames =
-            (argc > 3) ? std::stoi(argv[3]) : 2;
-        const int motion_end_frames =
-            (argc > 4) ? std::stoi(argv[4]) : 3;
-        const double mog2_learning_rate = 0.01;
-        const double pre_event_seconds =
-            (argc > 5) ? parsePreEventSeconds(argv[5]) : 0.0;
-        */
         const std::filesystem::path output_directory = std::filesystem::absolute(
             argc > 2 ? argv[2] : "./recordings"
         );
@@ -86,45 +65,13 @@ int main(int argc, char** argv) {
         }
         cv::cuda::setDevice(0);
 
-        // Responsável por RTSP, NVDEC, FPS/resolução e pacotes codificados.
         VideoStreamReader video_reader(input_source);
-        /*
-        const uint64_t pre_event_frame_count =
-            calculatePreEventFrameCount(pre_event_seconds, video_reader.fps());
-
-        // Responsável por MOG2, percentual de foreground, warm-up e debounce.
-        Mog2MotionDetector motion_detector(
-            video_reader.width(),
-            video_reader.height(),
-            video_reader.fps(),
-            motion_threshold_percent,
-            motion_start_frames,
-            motion_end_frames,
-            mog2_learning_rate
-        );
-
-        // Responsável por acompanhar o GOP e montar o buffer codificado do movimento.
-        EncodedVideoBuffer encoded_video_buffer(pre_event_frame_count);
-        */
         EncodedVideoBuffer encoded_video_buffer(target_decoded_frame_read_count);
         std::filesystem::create_directories(output_directory);
 
         std::cout << "STREAM_FPS fps=" << video_reader.fps() << "\n";
         std::cout << "STREAM_RESOLUTION width=" << video_reader.width()
                   << " height=" << video_reader.height() << "\n";
-        /*
-        std::cout << "MOTION_THRESHOLD percent="
-                  << motion_threshold_percent << "\n";
-        std::cout << "MOG2_WARMUP frames="
-                  << motion_detector.warmupFrameCount() << "\n";
-        std::cout << "PRE_EVENT seconds=" << pre_event_seconds
-                  << " frames=" << pre_event_frame_count
-                  << " reference=decoded_frame_index\n";
-        std::cout << "MOTION_BUFFER mode="
-                  << (pre_event_frame_count > 0
-                      ? "pre_event_key_frame_to_motion_off"
-                      : "previous_key_frame_to_motion_off") << "\n";
-        */
         std::cout << "MP4_RECORDING target_decoded_reads=" << target_decoded_frame_read_count
                   << " directory=" << output_directory << "\n";
         std::cout.flush();
@@ -163,98 +110,10 @@ int main(int argc, char** argv) {
         };
 
         while (keep_running) {
-            /*
-            bool decoded_frame_ready = false;
-
-            try {
-                decoded_frame_ready = video_reader.read(
-                    decoded_frame,
-                    encoded_video_packets,
-                    cuda_stream
-                );
-            } catch (const cv::Exception& error) {
-                std::cerr << "[fatal] NVDEC exception: " << error.what() << "\n";
-                break;
-            } catch (const std::exception& error) {
-                std::cerr << "[fatal] " << error.what() << "\n";
-                break;
-            }
-
-            if (!decoded_frame_ready) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                continue;
-            }
-            */
             if (!video_reader.read(decoded_frame, encoded_video_packets, cuda_stream)) {
                 break;
             }
             cuda_stream.waitForCompletion();
-
-            /*
-            encoded_video_buffer.updatePreEventBuffer(
-                encoded_video_packets.encoded_packets,
-                decoded_frame.decoded_frame_index
-            );
-
-            const MotionState motion_state = motion_detector.process(
-                decoded_frame.decoded_frame_gpu,
-                decoded_frame.decoded_frame_index,
-                cuda_stream
-            );
-
-            if (motion_state.started) {
-                const MotionBufferStartInfo start_info =
-                    encoded_video_buffer.startMotion(
-                        decoded_frame.decoded_frame_index,
-                        encoded_video_packets.encoded_packets
-                    );
-
-                std::cout << "MOTION_ON frame="
-                          << decoded_frame.decoded_frame_index << "\n";
-                std::cout << "MOTION_BUFFER_START motion_frame="
-                          << start_info.motion_decoded_frame_index
-                          << " start_frame="
-                          << start_info.start_decoded_frame_index
-                          << " extra_frames_before_motion="
-                          << start_info.extra_decoded_frames_before_motion
-                          << " gop_packets="
-                          << start_info.gop_encoded_packet_count
-                          << " starts_with_key_frame="
-                          << (start_info.starts_with_key_frame ? 1 : 0)
-                          << " requested_pre_event_frames="
-                          << start_info.requested_pre_event_frame_count
-                          << " pre_event_history_sufficient="
-                          << (start_info.pre_event_history_sufficient ? 1 : 0)
-                          << "\n";
-                std::cout.flush();
-            } else if (motion_state.active) {
-                // No frame do MOTION_ON o GOP já contém os pacotes atuais;
-                // por isso só anexamos diretamente nos frames seguintes.
-                encoded_video_buffer.appendMotionPackets(
-                    encoded_video_packets.encoded_packets
-                );
-            }
-
-            if (motion_state.ended) {
-                const MotionBufferCompleteInfo complete_info =
-                    encoded_video_buffer.finishMotion();
-
-                std::cout << "MOTION_OFF frame="
-                          << decoded_frame.decoded_frame_index << "\n";
-                std::cout << "MOTION_BUFFER_COMPLETE packets="
-                          << complete_info.encoded_packet_count
-                          << " bytes=" << complete_info.encoded_byte_count
-                          << " duration_seconds="
-                          << complete_info.duration_seconds
-                          << " key_frames=" << complete_info.key_frame_count
-                          << " starts_with_key_frame="
-                          << (complete_info.starts_with_key_frame ? 1 : 0)
-                          << " extra_frames_before_motion="
-                          << complete_info.extra_decoded_frames_before_motion
-                          << "\n";
-                std::cout.flush();
-            }
-            */
 
             for (const auto& packet : encoded_video_packets.encoded_packets) {
                 if (!packet) {
@@ -348,24 +207,6 @@ int main(int argc, char** argv) {
             }
         }
 
-        /*
-        if (motion_detector.isMotionActive()) {
-            const MotionBufferCompleteInfo current_info =
-                encoded_video_buffer.currentMotionInfo();
-
-            std::cout << "MOTION_OFF frame="
-                      << video_reader.processedFrameCount() << "\n";
-            std::cout << "MOTION_BUFFER_ON_SHUTDOWN packets="
-                      << current_info.encoded_packet_count
-                      << " bytes=" << current_info.encoded_byte_count
-                      << " starts_with_key_frame="
-                      << (current_info.starts_with_key_frame ? 1 : 0)
-                      << " extra_frames_before_motion="
-                      << current_info.extra_decoded_frames_before_motion
-                      << "\n";
-            std::cout.flush();
-        }
-        */
         if (mp4_output_context) {
             finish_recording();
         }
