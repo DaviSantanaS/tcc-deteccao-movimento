@@ -17,7 +17,7 @@ bool EncodedVideoBuffer::appendReadPackets(EncodedVideoPackets&& encoded_video_p
         throw std::length_error("O buffer atingiu o limite de frames decodificados.");
     }
 
-    encoded_video_packets_by_read_.push_back(std::move(encoded_video_packets));
+    encoded_packets_buffer_.push_back(std::move(encoded_video_packets));
     ++buffered_decoded_frame_count_;
     return buffered_decoded_frame_count_ == max_decoded_frame_count_;
 }
@@ -25,7 +25,7 @@ bool EncodedVideoBuffer::appendReadPackets(EncodedVideoPackets&& encoded_video_p
 std::vector<EncodedVideoPackets>
 EncodedVideoBuffer::takeBufferedReadPackets() {
     std::vector<EncodedVideoPackets> transferred_read_packets;
-    transferred_read_packets.swap(encoded_video_packets_by_read_);
+    transferred_read_packets.swap(encoded_packets_buffer_);
     buffered_decoded_frame_count_ = 0;
     return transferred_read_packets;
 }
