@@ -9,7 +9,7 @@ class EncodedVideoBuffer {
 public:
     explicit EncodedVideoBuffer(std::size_t max_decoded_frame_count = 1000);
 
-    bool appendReadPackets(EncodedVideoPackets&& encoded_video_packets);
+    bool bufferPacketsFromRead(EncodedVideoPackets&& encoded_video_packets);
 
     [[nodiscard]]
     std::vector<EncodedVideoPackets> takeBufferedReadPackets();

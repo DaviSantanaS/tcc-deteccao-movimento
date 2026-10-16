@@ -12,7 +12,7 @@ EncodedVideoBuffer::EncodedVideoBuffer(std::size_t max_decoded_frame_count)
     }
 }
 
-bool EncodedVideoBuffer::appendReadPackets(EncodedVideoPackets&& encoded_video_packets) {
+bool EncodedVideoBuffer::bufferPacketsFromRead(EncodedVideoPackets&& encoded_video_packets) {
     if (buffered_decoded_frame_count_ >= max_decoded_frame_count_) {
         throw std::length_error("O buffer atingiu o limite de frames decodificados.");
     }

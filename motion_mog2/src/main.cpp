@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
             recording_encoded_packet_count += encoded_video_packets.encoded_packets.size();
             if (waiting_for_next_keyframe) {
                 write_packets_from_read(std::move(encoded_video_packets));
-            } else if (encoded_video_buffer.appendReadPackets(std::move(encoded_video_packets))) {
+            } else if (encoded_video_buffer.bufferPacketsFromRead(std::move(encoded_video_packets))) {
                 writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedReadPackets());
                 waiting_for_next_keyframe = true;
             }

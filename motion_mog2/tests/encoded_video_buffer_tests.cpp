@@ -74,7 +74,7 @@ int main() {
 
                 for (std::size_t read_index = 0; read_index < packets_from_reads.size(); ++read_index) {
                     const bool decoded_frame_limit_reached =
-                        read_packets_buffer.appendReadPackets(std::move(packets_from_reads[read_index]));
+                        read_packets_buffer.bufferPacketsFromRead(std::move(packets_from_reads[read_index]));
                     if (decoded_frame_limit_reached != (read_index == 2)) {
                         throw std::runtime_error("O limite deve contar leituras, inclusive a sem pacotes.");
                     }
@@ -96,7 +96,7 @@ int main() {
 
                 bool rejected_extra_read = false;
                 try {
-                    read_packets_buffer.appendReadPackets(std::move(extra_read_packets));
+                    read_packets_buffer.bufferPacketsFromRead(std::move(extra_read_packets));
                 } catch (const std::length_error&) {
                     rejected_extra_read = true;
                 }
@@ -110,7 +110,7 @@ int main() {
 
                 EncodedVideoBuffer single_read_buffer(1);
                 EncodedVideoPackets read_without_packets{{}, video_stream_parameters};
-                if (!single_read_buffer.appendReadPackets(std::move(read_without_packets)) ||
+                if (!single_read_buffer.bufferPacketsFromRead(std::move(read_without_packets)) ||
                     read_without_packets.video_stream_parameters) {
                     throw std::runtime_error("Com limite um, a primeira leitura deve preencher o buffer.");
                 }
@@ -169,7 +169,7 @@ int main() {
                 throw std::runtime_error("Retirar de um buffer vazio deve devolver um vetor vazio.");
             }
             EncodedVideoPackets partial_read_packets{{}, video_stream_parameters};
-            if (reusable_read_packets_buffer.appendReadPackets(std::move(partial_read_packets))) {
+            if (reusable_read_packets_buffer.bufferPacketsFromRead(std::move(partial_read_packets))) {
                 throw std::runtime_error("Uma leitura parcial nao deve atingir o limite tres.");
             }
             {
@@ -204,7 +204,7 @@ int main() {
                         ++packet_index;
                     }
                     const bool decoded_frame_limit_reached =
-                        reusable_read_packets_buffer.appendReadPackets(std::move(packets_from_read));
+                        reusable_read_packets_buffer.bufferPacketsFromRead(std::move(packets_from_read));
                     if (decoded_frame_limit_reached != (read_index == 2)) {
                         throw std::runtime_error("A retirada deve reiniciar a contagem e manter o limite em cada ciclo.");
                     }
