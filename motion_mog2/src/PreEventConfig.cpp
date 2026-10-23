@@ -4,20 +4,20 @@
 #include <limits>
 #include <stdexcept>
 
-double parsePreEventSeconds(const std::string& value) {
+double parsePreEventSeconds(const std::string& pre_event_seconds_text) {
     size_t parsed_character_count = 0;
     double pre_event_seconds = 0.0;
 
     try {
-        pre_event_seconds = std::stod(value, &parsed_character_count);
+        pre_event_seconds = std::stod(pre_event_seconds_text, &parsed_character_count);
     } catch (const std::exception&) {
-        throw std::runtime_error("Tempo de pre-evento invalido: " + value);
+        throw std::runtime_error("Tempo de pre-evento invalido: " + pre_event_seconds_text);
     }
 
-    if (parsed_character_count != value.size() ||
+    if (parsed_character_count != pre_event_seconds_text.size() ||
         !std::isfinite(pre_event_seconds) || pre_event_seconds < 0.0) {
         throw std::runtime_error(
-            "O pre-evento deve ser um numero finito de segundos >= 0: " + value
+            "O pre-evento deve ser um numero finito de segundos >= 0: " + pre_event_seconds_text
         );
     }
 

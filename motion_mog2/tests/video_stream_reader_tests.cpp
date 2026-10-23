@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
 
                 if (decoded_frame.decoded_frame_gpu.empty() ||
                     decoded_frame.decoded_frame_index != expected_frame_index ||
-                    video_reader.processedFrameCount() != expected_frame_index + 1) {
+                    video_reader.decodedFrameCount() != expected_frame_index + 1) {
                     throw std::runtime_error("A leitura deve produzir imagem na GPU, indice e contador corretos.");
                 }
 

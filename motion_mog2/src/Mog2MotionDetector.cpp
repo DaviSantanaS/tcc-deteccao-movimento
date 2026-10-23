@@ -11,8 +11,8 @@ Mog2MotionDetector::Mog2MotionDetector(
     int decoded_frame_height,
     double stream_fps,
     double motion_threshold_percent,
-    int motion_start_frames,
-    int motion_end_frames,
+    int motion_start_frame_count,
+    int motion_end_frame_count,
     double learning_rate
 ) :
     decoded_frame_pixel_count_(
@@ -20,8 +20,8 @@ Mog2MotionDetector::Mog2MotionDetector(
         static_cast<int64_t>(decoded_frame_height)
     ),
     motion_threshold_ratio_(motion_threshold_percent / 100.0),
-    motion_start_frames_(motion_start_frames),
-    motion_end_frames_(motion_end_frames),
+    motion_start_frame_count_(motion_start_frame_count),
+    motion_end_frame_count_(motion_end_frame_count),
     learning_rate_(learning_rate),
     warmup_frame_count_(
         static_cast<uint64_t>(stream_fps * 1.0 + 0.5)
@@ -33,11 +33,11 @@ Mog2MotionDetector::Mog2MotionDetector(
         );
     }
 
-    const int mog2_history = 500;
+    const int mog2_history_frame_count = 500;
     const double mog2_variance_threshold = 16.0;
 
     mog2_detector_ = cv::cuda::createBackgroundSubtractorMOG2(
-        mog2_history,
+        mog2_history_frame_count,
         mog2_variance_threshold,
         false
     );
@@ -53,7 +53,7 @@ Mog2MotionDetector::Mog2MotionDetector(
     );
 }
 
-MotionState Mog2MotionDetector::process(
+MotionState Mog2MotionDetector::detectMotion(
     const cv::cuda::GpuMat& decoded_frame_gpu,
     uint64_t decoded_frame_index,
     cv::cuda::Stream& cuda_stream
@@ -85,48 +85,48 @@ MotionState Mog2MotionDetector::process(
     const int64_t foreground_pixel_count =
         cv::cuda::countNonZero(motion_mask_gpu_);
 
-    MotionState state;
+    MotionState motion_state;
 
     if (decoded_frame_index < warmup_frame_count_) {
-        motion_frame_count_ = 0;
-        idle_frame_count_ = 0;
-        state.active = motion_active_;
-        return state;
+        consecutive_motion_frame_count_ = 0;
+        consecutive_idle_frame_count_ = 0;
+        motion_state.active = motion_active_;
+        return motion_state;
     }
 
-    state.foreground_ratio =
+    motion_state.foreground_ratio =
         static_cast<double>(foreground_pixel_count) /
         static_cast<double>(decoded_frame_pixel_count_);
 
-    state.detected =
-        state.foreground_ratio >= motion_threshold_ratio_;
+    motion_state.detected =
+        motion_state.foreground_ratio >= motion_threshold_ratio_;
 
     if (!motion_active_) {
-        if (state.detected) {
-            if (++motion_frame_count_ >= motion_start_frames_) {
+        if (motion_state.detected) {
+            if (++consecutive_motion_frame_count_ >= motion_start_frame_count_) {
                 motion_active_ = true;
-                state.started = true;
-                motion_frame_count_ = 0;
-                idle_frame_count_ = 0;
+                motion_state.started = true;
+                consecutive_motion_frame_count_ = 0;
+                consecutive_idle_frame_count_ = 0;
             }
         } else {
-            motion_frame_count_ = 0;
+            consecutive_motion_frame_count_ = 0;
         }
     } else {
-        if (!state.detected) {
-            if (++idle_frame_count_ >= motion_end_frames_) {
+        if (!motion_state.detected) {
+            if (++consecutive_idle_frame_count_ >= motion_end_frame_count_) {
                 motion_active_ = false;
-                state.ended = true;
-                idle_frame_count_ = 0;
-                motion_frame_count_ = 0;
+                motion_state.ended = true;
+                consecutive_idle_frame_count_ = 0;
+                consecutive_motion_frame_count_ = 0;
             }
         } else {
-            idle_frame_count_ = 0;
+            consecutive_idle_frame_count_ = 0;
         }
     }
 
-    state.active = motion_active_;
-    return state;
+    motion_state.active = motion_active_;
+    return motion_state;
 }
 
 uint64_t Mog2MotionDetector::warmupFrameCount() const {

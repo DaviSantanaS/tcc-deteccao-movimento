@@ -17,8 +17,8 @@ int main(int argc, char** argv) {
     }
 
     try {
-        EncodedVideoPackets first_packet_collection;
-        EncodedVideoPackets remaining_packet_collection;
+        EncodedVideoPackets first_packet_batch;
+        EncodedVideoPackets remaining_packet_batch;
         std::weak_ptr<const VideoStreamParameters> video_stream_parameters_lifetime;
         std::weak_ptr<const AVCodecParameters> codec_parameters_lifetime;
         std::array<const unsigned char*, 3> original_packet_data_addresses{};
@@ -209,15 +209,15 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("A entrega Annex B nao deve alterar a extradata publica ou preservada.");
             }
 
-            const auto empty_packet_collection = video_source.takePacketsWithStreamParameters(0);
-            if (!empty_packet_collection.encoded_packets.empty() ||
-                empty_packet_collection.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
+            const auto empty_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(0);
+            if (!empty_packet_batch.encoded_packets.empty() ||
+                empty_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
                 throw std::runtime_error("Retirar zero pacotes deve retornar uma colecao vazia com configuracao.");
             }
 
             bool rejected_excessive_packet_count = false;
             try {
-                video_source.takePacketsWithStreamParameters(4);
+                video_source.dequeueEncodedPacketsWithStreamParameters(4);
             } catch (const std::runtime_error&) {
                 rejected_excessive_packet_count = true;
             }
@@ -225,19 +225,19 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("A retirada deve rejeitar uma quantidade maior que a fila.");
             }
 
-            first_packet_collection = video_source.takePacketsWithStreamParameters(2);
-            remaining_packet_collection = video_source.takePacketsWithStreamParameters(1);
-            if (first_packet_collection.encoded_packets.size() != 2 ||
-                remaining_packet_collection.encoded_packets.size() != 1 ||
-                first_packet_collection.video_stream_parameters.get() != expected_video_stream_parameters.get() ||
-                remaining_packet_collection.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
+            first_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(2);
+            remaining_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(1);
+            if (first_packet_batch.encoded_packets.size() != 2 ||
+                remaining_packet_batch.encoded_packets.size() != 1 ||
+                first_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get() ||
+                remaining_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
                 throw std::runtime_error("As retiradas devem preservar as quantidades e compartilhar a configuracao.");
             }
 
             for (std::size_t packet_index = 0; packet_index < reference_packets.size(); ++packet_index) {
                 const auto& queued_packet = packet_index < 2
-                    ? first_packet_collection.encoded_packets[packet_index]
-                    : remaining_packet_collection.encoded_packets[0];
+                    ? first_packet_batch.encoded_packets[packet_index]
+                    : remaining_packet_batch.encoded_packets[0];
                 const auto& reference_packet = reference_packets[packet_index];
                 if (!queued_packet || queued_packet->data == nullptr || queued_packet->size != reference_packet->size ||
                     queued_packet->pts != reference_packet->pts || queued_packet->dts != reference_packet->dts ||
@@ -262,8 +262,8 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Um pacote vazio deve ser rejeitado sem encerrar o filtro.");
             }
 
-            for (std::size_t packet_index = 0; packet_index < first_packet_collection.encoded_packets.size(); ++packet_index) {
-                const auto& original_packet = first_packet_collection.encoded_packets[packet_index];
+            for (std::size_t packet_index = 0; packet_index < first_packet_batch.encoded_packets.size(); ++packet_index) {
+                const auto& original_packet = first_packet_batch.encoded_packets[packet_index];
                 const auto original_pts = original_packet->pts;
                 const auto original_dts = original_packet->dts;
                 const auto original_duration = original_packet->duration;
@@ -315,14 +315,14 @@ int main(int argc, char** argv) {
             }
 
             auto undrained_filter = createH264AnnexBFilter(*codec_parameters, packet_timestamp_time_base);
-            auto pending_filter_input = cloneAvPacket(*first_packet_collection.encoded_packets.front());
+            auto pending_filter_input = cloneAvPacket(*first_packet_batch.encoded_packets.front());
             if (av_bsf_send_packet(undrained_filter.get(), pending_filter_input.get()) < 0) {
                 throw std::runtime_error("Nao foi possivel preparar o caso de filtro com dados pendentes.");
             }
             bool rejected_undrained_filter = false;
             try {
                 static_cast<void>(filterH264PacketToAnnexB(
-                    *undrained_filter, *first_packet_collection.encoded_packets.front()
+                    *undrained_filter, *first_packet_batch.encoded_packets.front()
                 ));
             } catch (const std::runtime_error&) {
                 rejected_undrained_filter = true;
@@ -333,7 +333,7 @@ int main(int argc, char** argv) {
 
             bool rejected_empty_queue = false;
             try {
-                video_source.takePacketsWithStreamParameters(1);
+                video_source.dequeueEncodedPacketsWithStreamParameters(1);
             } catch (const std::runtime_error&) {
                 rejected_empty_queue = true;
             }
@@ -343,10 +343,10 @@ int main(int argc, char** argv) {
         }
 
         if (video_stream_parameters_lifetime.expired() || codec_parameters_lifetime.expired() ||
-            first_packet_collection.video_stream_parameters->codec_parameters->codec_id != AV_CODEC_ID_H264 ||
-            first_packet_collection.video_stream_parameters->codec_parameters->width <= 0 ||
-            first_packet_collection.video_stream_parameters->codec_parameters->extradata == nullptr ||
-            first_packet_collection.video_stream_parameters->codec_parameters->extradata_size <= 0) {
+            first_packet_batch.video_stream_parameters->codec_parameters->codec_id != AV_CODEC_ID_H264 ||
+            first_packet_batch.video_stream_parameters->codec_parameters->width <= 0 ||
+            first_packet_batch.video_stream_parameters->codec_parameters->extradata == nullptr ||
+            first_packet_batch.video_stream_parameters->codec_parameters->extradata_size <= 0) {
             throw std::runtime_error("As colecoes devem manter a configuracao valida apos destruir a fonte.");
         }
 
@@ -360,11 +360,11 @@ int main(int argc, char** argv) {
 
         for (std::size_t packet_index = 0; packet_index < original_packet_contents.size(); ++packet_index) {
             const auto& retained_packet = packet_index < 2
-                ? first_packet_collection.encoded_packets[packet_index]
-                : remaining_packet_collection.encoded_packets[0];
+                ? first_packet_batch.encoded_packets[packet_index]
+                : remaining_packet_batch.encoded_packets[0];
             const auto& expected_packet_contents = original_packet_contents[packet_index];
             const auto& packet_timestamp_time_base =
-                first_packet_collection.video_stream_parameters->packet_timestamp_time_base;
+                first_packet_batch.video_stream_parameters->packet_timestamp_time_base;
             if (!retained_packet ||
                 retained_packet->data != original_packet_data_addresses[packet_index] ||
                 static_cast<std::size_t>(retained_packet->size) != expected_packet_contents.size() ||
@@ -375,12 +375,12 @@ int main(int argc, char** argv) {
             }
         }
 
-        first_packet_collection = EncodedVideoPackets{};
+        first_packet_batch = EncodedVideoPackets{};
         if (video_stream_parameters_lifetime.expired() || codec_parameters_lifetime.expired()) {
             throw std::runtime_error("A segunda colecao deve manter a configuracao viva.");
         }
 
-        remaining_packet_collection = EncodedVideoPackets{};
+        remaining_packet_batch = EncodedVideoPackets{};
         if (!video_stream_parameters_lifetime.expired() || !codec_parameters_lifetime.expired()) {
             throw std::runtime_error("A ultima colecao deve liberar a configuracao e seus parametros.");
         }

@@ -23,7 +23,7 @@
 
 std::atomic<bool> keep_running{true};
 
-void handle_signal(int) {
+void handleTerminationSignal(int) {
     keep_running = false;
 }
 
@@ -37,8 +37,8 @@ int main(int argc, char** argv) {
         return show_help ? 0 : 1;
     }
 
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
+    signal(SIGINT, handleTerminationSignal);
+    signal(SIGTERM, handleTerminationSignal);
 
     try {
         const std::string input_source =
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
         if (parsed_read_count == 0 || parsed_read_count > std::numeric_limits<std::size_t>::max()) {
             throw std::invalid_argument("O alvo de leituras deve caber em size_t e ser maior que zero.");
         }
-        const auto target_decoded_frame_read_count = static_cast<std::size_t>(parsed_read_count);
+        const auto target_recording_read_count = static_cast<std::size_t>(parsed_read_count);
 
         if (cv::cuda::getCudaEnabledDeviceCount() <= 0) {
             std::cerr << "[fatal] Nenhuma GPU CUDA visível.\n";
@@ -69,13 +69,13 @@ int main(int argc, char** argv) {
         if (!video_stream_parameters) {
             throw std::invalid_argument("Os parametros da stream devem estar disponiveis apos construir o reader.");
         }
-        EncodedVideoBuffer encoded_video_buffer(target_decoded_frame_read_count);
+        EncodedVideoBuffer encoded_video_buffer(target_recording_read_count);
         std::filesystem::create_directories(output_directory);
 
         std::cout << "STREAM_FPS fps=" << video_reader.fps() << "\n";
         std::cout << "STREAM_RESOLUTION width=" << video_reader.width()
                   << " height=" << video_reader.height() << "\n";
-        std::cout << "MP4_RECORDING target_decoded_reads=" << target_decoded_frame_read_count
+        std::cout << "MP4_RECORDING target_decoded_reads=" << target_recording_read_count
                   << " directory=" << output_directory << "\n";
         std::cout.flush();
 
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
         AvOutputIoContextPtr output_io_context;
         AvOutputFormatContextPtr mp4_output_context;
         std::filesystem::path current_output_file_path;
-        std::size_t recording_decoded_read_count = 0;
+        std::size_t recording_read_count = 0;
         std::size_t recording_encoded_packet_count = 0;
         std::size_t skipped_initial_packet_count = 0;
         std::size_t completed_recording_count = 0;
@@ -103,7 +103,7 @@ int main(int argc, char** argv) {
             output_io_context.reset();
             ++completed_recording_count;
             std::cout << "MP4_SAVED path=" << current_output_file_path
-                      << " decoded_reads=" << recording_decoded_read_count
+                      << " decoded_reads=" << recording_read_count
                       << " encoded_packets=" << recording_encoded_packet_count << "\n";
             std::cout.flush();
         };
@@ -181,14 +181,14 @@ int main(int argc, char** argv) {
                 (void)createMp4VideoStream(*mp4_output_context, *video_stream_parameters);
                 output_io_context = openOutputFile(current_output_file_path);
                 writeMp4Header(*mp4_output_context, output_io_context);
-                recording_decoded_read_count = 0;
+                recording_read_count = 0;
                 recording_encoded_packet_count = 0;
                 waiting_for_next_keyframe = false;
                 std::cout << "MP4_STARTED path=" << current_output_file_path << "\n";
                 std::cout.flush();
             }
 
-            ++recording_decoded_read_count;
+            ++recording_read_count;
             recording_encoded_packet_count += encoded_packets.size();
             if (waiting_for_next_keyframe) {
                 write_encoded_packets(std::move(encoded_packets));
@@ -201,7 +201,7 @@ int main(int argc, char** argv) {
         if (mp4_output_context) {
             finish_recording();
         }
-        std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.processedFrameCount()
+        std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.decodedFrameCount()
                   << " saved_files=" << completed_recording_count
                   << " skipped_initial_packets=" << skipped_initial_packet_count << "\n";
     } catch (const cv::Exception& error) {

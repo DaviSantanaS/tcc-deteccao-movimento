@@ -20,7 +20,7 @@ extern "C" {
 
 class FfmpegRawVideoSource : public cv::cudacodec::RawVideoSource {
 public:
-    explicit FfmpegRawVideoSource(const std::string& input_url);
+    explicit FfmpegRawVideoSource(const std::string& input_source);
 
     cv::cudacodec::FormatInfo format() const override;
     void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
@@ -33,7 +33,7 @@ public:
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
     std::vector<AvPacketPtr> dequeueEncodedPackets(std::size_t packet_count);
-    EncodedVideoPackets takePacketsWithStreamParameters(std::size_t packet_count);
+    EncodedVideoPackets dequeueEncodedPacketsWithStreamParameters(std::size_t packet_count);
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
@@ -49,20 +49,20 @@ private:
     using AvFormatContextPtr =
         std::unique_ptr<AVFormatContext, AvFormatContextDeleter>;
 
-    void openInput(const std::string& input_url);
-    void initializeOpenCvFormat();
-    void copyCodecExtraDataFromStream();
+    void openInputAndSelectVideoStream(const std::string& input_source);
+    void initializeVideoFormat();
+    void copyVideoCodecExtraData();
 
-    AvFormatContextPtr video_source_context;
-    AvPacketPtr current_encoded_packet;
-    AvPacketPtr current_encoded_packet_for_nvdec;
-    AVStream* encoded_video_stream = nullptr;
-    int encoded_video_stream_index = -1;
-    cv::cudacodec::FormatInfo video_format;
-    cv::Mat video_codec_extra_data;
-    std::shared_ptr<const VideoStreamParameters> video_stream_parameters;
-    AvBitstreamFilterPtr annex_b_filter_for_nvdec;
+    AvFormatContextPtr video_source_context_;
+    AvPacketPtr current_encoded_packet_;
+    AvPacketPtr current_encoded_packet_for_nvdec_;
+    AVStream* encoded_video_stream_ = nullptr;
+    int encoded_video_stream_index_ = -1;
+    cv::cudacodec::FormatInfo video_format_;
+    cv::Mat video_codec_extra_data_;
+    std::shared_ptr<const VideoStreamParameters> video_stream_parameters_;
+    AvBitstreamFilterPtr annex_b_filter_for_nvdec_;
 
-    std::mutex encoded_packets_queue_mutex;
-    std::deque<AvPacketPtr> encoded_packets_queue;
+    std::mutex encoded_packets_queue_mutex_;
+    std::deque<AvPacketPtr> encoded_packets_queue_;
 };

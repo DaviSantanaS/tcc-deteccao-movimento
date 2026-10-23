@@ -46,15 +46,15 @@ void writeMp4Packet(
 );
 
 // Exige cabecalho inicializado com os parametros da fonte e I/O ainda vivo.
-// No MVP, leituras com pacotes devem compartilhar a mesma instancia de parametros.
-// A colecao transferida e liberada mesmo em falha de validacao.
+// Lotes nao vazios devem compartilhar a mesma instancia dos parametros da fonte.
+// Os lotes transferidos sao liberados mesmo em falha de validacao.
 // Falha de escrita pode deixar saida parcial: descarte o contexto sem tentar novamente.
 void writeMp4Packets(
     AVFormatContext& mp4_output_context,
-    std::vector<EncodedVideoPackets> encoded_video_packets_by_read
+    std::vector<EncodedVideoPackets> encoded_packet_batches
 );
 
-// Adaptacao temporaria para a interface de colecoes acima, com as mesmas precondicoes.
+// Adaptacao temporaria para a interface de lotes acima, com as mesmas precondicoes.
 // Os argumentos transferidos sao liberados tambem em erro.
 void writeMp4Packets(
     AVFormatContext& mp4_output_context,

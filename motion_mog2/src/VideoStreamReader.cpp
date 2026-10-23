@@ -5,16 +5,16 @@
 
 #include <stdexcept>
 
-VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
-    cv::cudacodec::VideoReaderInitParams reader_params;
-    reader_params.allowFrameDrop = false;
-    reader_params.rawMode = true;
-    reader_params.udpSource = true;
+VideoStreamReader::VideoStreamReader(const std::string& input_source) {
+    cv::cudacodec::VideoReaderInitParams reader_parameters;
+    reader_parameters.allowFrameDrop = false;
+    reader_parameters.rawMode = true;
+    reader_parameters.udpSource = true;
 
-    ffmpeg_video_source_ = cv::makePtr<FfmpegRawVideoSource>(rtsp_url);
+    ffmpeg_video_source_ = cv::makePtr<FfmpegRawVideoSource>(input_source);
     nvdec_video_reader_ = cv::cudacodec::createVideoReader(
         ffmpeg_video_source_,
-        reader_params
+        reader_parameters
     );
 
     const cv::cudacodec::FormatInfo stream_format = nvdec_video_reader_->format();
@@ -65,19 +65,19 @@ bool VideoStreamReader::read(
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
 
-    double encoded_packet_count_from_grab_value = 0.0;
+    double encoded_packet_count_value = 0.0;
     if (!nvdec_video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-            encoded_packet_count_from_grab_value)) {
+            encoded_packet_count_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter a quantidade de pacotes codificados."
         );
     }
 
-    const size_t encoded_packet_count_from_grab =
-        static_cast<size_t>(encoded_packet_count_from_grab_value);
+    const size_t encoded_packet_count =
+        static_cast<size_t>(encoded_packet_count_value);
     encoded_packets =
-        ffmpeg_video_source_->dequeueEncodedPackets(encoded_packet_count_from_grab);
+        ffmpeg_video_source_->dequeueEncodedPackets(encoded_packet_count);
 
     decoded_frame.decoded_frame_index = next_decoded_frame_index_;
     ++next_decoded_frame_index_;
@@ -101,6 +101,6 @@ int VideoStreamReader::height() const {
     return decoded_frame_height_;
 }
 
-uint64_t VideoStreamReader::processedFrameCount() const {
+uint64_t VideoStreamReader::decodedFrameCount() const {
     return next_decoded_frame_index_;
 }

@@ -21,7 +21,7 @@ struct DecodedFrame {
 
 class VideoStreamReader {
 public:
-    explicit VideoStreamReader(const std::string& rtsp_url);
+    explicit VideoStreamReader(const std::string& input_source);
 
     bool read(
         DecodedFrame& decoded_frame,
@@ -34,7 +34,7 @@ public:
     double fps() const;
     int width() const;
     int height() const;
-    uint64_t processedFrameCount() const;
+    uint64_t decodedFrameCount() const;
 
 private:
     // Declarada antes do reader para permanecer viva durante sua destruicao.

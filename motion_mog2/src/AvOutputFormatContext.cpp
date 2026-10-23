@@ -177,7 +177,7 @@ void writeMp4Packet(
 
 void writeMp4Packets(
     AVFormatContext& mp4_output_context,
-    std::vector<EncodedVideoPackets> encoded_video_packets_by_read
+    std::vector<EncodedVideoPackets> encoded_packet_batches
 ) {
     if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
         std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||
@@ -197,11 +197,11 @@ void writeMp4Packets(
     }
 
     const VideoStreamParameters* shared_source_parameters = nullptr;
-    for (const auto& packets_from_read : encoded_video_packets_by_read) {
-        if (packets_from_read.encoded_packets.empty()) {
+    for (const auto& encoded_packet_batch : encoded_packet_batches) {
+        if (encoded_packet_batch.encoded_packets.empty()) {
             continue;
         }
-        const auto& source_parameters = packets_from_read.video_stream_parameters;
+        const auto& source_parameters = encoded_packet_batch.video_stream_parameters;
         if (!source_parameters || !source_parameters->codec_parameters ||
             source_parameters->codec_parameters->codec_type != AVMEDIA_TYPE_VIDEO ||
             source_parameters->codec_parameters->codec_id != AV_CODEC_ID_H264 ||
@@ -213,7 +213,7 @@ void writeMp4Packets(
             throw std::invalid_argument("As leituras com pacotes devem compartilhar a mesma instancia dos parametros da fonte.");
         }
         shared_source_parameters = source_parameters.get();
-        for (const auto& encoded_packet : packets_from_read.encoded_packets) {
+        for (const auto& encoded_packet : encoded_packet_batch.encoded_packets) {
             if (!encoded_packet || !encoded_packet->buf || !encoded_packet->data || encoded_packet->size <= 0 ||
                 encoded_packet->pts == AV_NOPTS_VALUE || encoded_packet->dts == AV_NOPTS_VALUE ||
                 encoded_packet->duration < 0 || encoded_packet->time_base.num <= 0 ||
@@ -224,13 +224,13 @@ void writeMp4Packets(
         }
     }
 
-    for (const auto& packets_from_read : encoded_video_packets_by_read) {
-        if (packets_from_read.encoded_packets.empty()) {
+    for (const auto& encoded_packet_batch : encoded_packet_batches) {
+        if (encoded_packet_batch.encoded_packets.empty()) {
             continue;
         }
-        for (const auto& encoded_packet : packets_from_read.encoded_packets) {
+        for (const auto& encoded_packet : encoded_packet_batch.encoded_packets) {
             prepareEncodedPacketForOutput(
-                *encoded_packet, packets_from_read.video_stream_parameters->packet_timestamp_time_base,
+                *encoded_packet, encoded_packet_batch.video_stream_parameters->packet_timestamp_time_base,
                 video_output_stream.time_base, video_output_stream.index
             );
             writeMp4Packet(mp4_output_context, *encoded_packet);
@@ -247,9 +247,9 @@ void writeMp4Packets(
         std::move(encoded_packets),
         std::move(video_stream_parameters)
     };
-    std::vector<EncodedVideoPackets> packet_batches;
-    packet_batches.push_back(std::move(packet_batch));
-    writeMp4Packets(mp4_output_context, std::move(packet_batches));
+    std::vector<EncodedVideoPackets> encoded_packet_batches;
+    encoded_packet_batches.push_back(std::move(packet_batch));
+    writeMp4Packets(mp4_output_context, std::move(encoded_packet_batches));
 }
 
 void writeMp4Trailer(AVFormatContext& mp4_output_context) {

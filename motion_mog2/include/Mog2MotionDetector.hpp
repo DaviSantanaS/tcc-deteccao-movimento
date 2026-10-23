@@ -21,12 +21,12 @@ public:
         int decoded_frame_height,
         double stream_fps,
         double motion_threshold_percent,
-        int motion_start_frames,
-        int motion_end_frames,
+        int motion_start_frame_count,
+        int motion_end_frame_count,
         double learning_rate
     );
 
-    MotionState process(
+    MotionState detectMotion(
         const cv::cuda::GpuMat& decoded_frame_gpu,
         uint64_t decoded_frame_index,
         cv::cuda::Stream& cuda_stream
@@ -38,8 +38,8 @@ public:
 private:
     int64_t decoded_frame_pixel_count_ = 0;
     double motion_threshold_ratio_ = 0.0;
-    int motion_start_frames_ = 0;
-    int motion_end_frames_ = 0;
+    int motion_start_frame_count_ = 0;
+    int motion_end_frame_count_ = 0;
     double learning_rate_ = 0.0;
     uint64_t warmup_frame_count_ = 0;
 
@@ -48,6 +48,6 @@ private:
     cv::cuda::GpuMat motion_mask_gpu_;
 
     bool motion_active_ = false;
-    int motion_frame_count_ = 0;
-    int idle_frame_count_ = 0;
+    int consecutive_motion_frame_count_ = 0;
+    int consecutive_idle_frame_count_ = 0;
 };
