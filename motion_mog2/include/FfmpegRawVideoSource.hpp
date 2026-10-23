@@ -25,7 +25,10 @@ public:
     cv::cudacodec::FormatInfo format() const override;
     void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
     void getExtraData(cv::Mat& extra_data) const override;
-    bool getNextPacket(unsigned char** data, std::size_t* size) override;
+    bool getNextPacket(
+        unsigned char** encoded_packet_data_for_nvdec,
+        std::size_t* encoded_packet_size_bytes_for_nvdec
+    ) override;
     bool lastPacketContainsKeyFrame() const override;
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
@@ -51,15 +54,15 @@ private:
     void copyCodecExtraDataFromStream();
 
     AvFormatContextPtr video_source_context;
-    AvPacketPtr current_encoded_frame_packet;
-    AvPacketPtr current_decoder_packet;
+    AvPacketPtr current_encoded_packet;
+    AvPacketPtr current_encoded_packet_for_nvdec;
     AVStream* encoded_video_stream = nullptr;
     int encoded_video_stream_index = -1;
     cv::cudacodec::FormatInfo video_format;
     cv::Mat video_codec_extra_data;
     std::shared_ptr<const VideoStreamParameters> video_stream_parameters;
-    AvBitstreamFilterPtr decoder_bitstream_filter;
+    AvBitstreamFilterPtr annex_b_filter_for_nvdec;
 
-    std::mutex encoded_frames_packets_buffer_mutex;
-    std::deque<AvPacketPtr> encoded_frames_packets_buffer;
+    std::mutex encoded_packets_queue_mutex;
+    std::deque<AvPacketPtr> encoded_packets_queue;
 };

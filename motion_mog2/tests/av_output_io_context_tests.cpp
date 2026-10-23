@@ -750,8 +750,11 @@ int main() {
                 *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
             );
             const std::weak_ptr<const VideoStreamParameters> transferred_parameters = collection_source_parameters;
-            auto source_collections = create_source_collections(collection_source_parameters);
-            auto retained_packet = cloneAvPacket(*source_collections[0].encoded_packets[0]);
+            std::vector<AvPacketPtr> source_packets;
+            for (int packet_index = 0; packet_index < 4; ++packet_index) {
+                source_packets.push_back(create_source_packet(packet_index));
+            }
+            auto retained_packet = cloneAvPacket(*source_packets.front());
             {
                 auto collection_io_context = openOutputFile(collection_file_path);
                 auto collection_format_context = allocateMp4OutputContext();
@@ -769,11 +772,14 @@ int main() {
                 writeMp4Packets(*collection_format_context, {});
                 std::vector<EncodedVideoPackets> empty_read_groups(2);
                 writeMp4Packets(*collection_format_context, std::move(empty_read_groups));
+                writeMp4Packets(*collection_format_context, {}, collection_source_parameters);
+                writeMp4Packets(*collection_format_context, {}, nullptr);
                 if (avio_tell(collection_io_context.get()) != io_position_before_empty_collections) {
-                    throw std::runtime_error("Colecao vazia e leituras sem pacotes nao devem escrever bytes.");
+                    throw std::runtime_error("Vetores vazios, colecoes vazias e leituras sem pacotes nao devem escrever bytes.");
                 }
-                collection_source_parameters.reset();
-                writeMp4Packets(*collection_format_context, std::move(source_collections));
+                writeMp4Packets(
+                    *collection_format_context, std::move(source_packets), std::move(collection_source_parameters)
+                );
                 if (!transferred_parameters.expired() || retained_packet->pts != 0 || retained_packet->dts != 0 ||
                     retained_packet->stream_index != 5 || retained_packet->pos != 12345 ||
                     av_cmp_q(retained_packet->time_base, header_video_stream_parameters.packet_timestamp_time_base) != 0 ||
@@ -840,6 +846,19 @@ int main() {
                 auto rejected_collection_context = create_video_output_context();
                 expect_collection_rejection(*rejected_collection_context, {});
                 writeMp4Header(*rejected_collection_context, rejected_collection_io);
+                std::vector<AvPacketPtr> packets_without_parameters;
+                packets_without_parameters.push_back(create_source_packet(0));
+                const auto io_position_before_missing_parameters = avio_tell(rejected_collection_io.get());
+                bool missing_parameters_rejected = false;
+                try {
+                    writeMp4Packets(*rejected_collection_context, std::move(packets_without_parameters), nullptr);
+                } catch (const std::invalid_argument&) {
+                    missing_parameters_rejected = true;
+                }
+                if (!missing_parameters_rejected ||
+                    avio_tell(rejected_collection_io.get()) != io_position_before_missing_parameters) {
+                    throw std::runtime_error("Pacotes com parametros separados ausentes devem ser rejeitados antes de escrever.");
+                }
                 auto missing_parameters = create_source_collections(validation_source_parameters);
                 missing_parameters[2].video_stream_parameters.reset();
                 expect_collection_rejection(*rejected_collection_context, std::move(missing_parameters));
@@ -918,8 +937,9 @@ int main() {
         std::cout << "PASS: trailer MP4 com moov; mesmos bytes recuperados por demux sem decodificacao.\n";
         std::cout << "PASS: trailer desassocia pb sem fechar I/O; novas escritas e finalizacoes rejeitadas.\n";
         std::cout << "PASS: precondicoes preservam contexto; falha injetada no trailer tratada sem descritores restantes.\n";
-        std::cout << "PASS: colecoes 2/0/2 transferidas por movimento; quatro pacotes com bytes, ordem e timestamps corretos apos demux.\n";
-        std::cout << "PASS: colecoes vazias sem escrita; validacao completa rejeita erro no ultimo grupo antes de escrever.\n";
+        std::cout << "PASS: vetor e parametros separados transferidos por movimento; quatro pacotes com bytes, ordem e timestamps corretos apos demux.\n";
+        std::cout << "PASS: vetores e colecoes vazios sem escrita; validacao completa rejeita erro no ultimo grupo antes de escrever.\n";
+        std::cout << "PASS: vetor com pacotes e parametros ausentes rejeitado antes de escrever.\n";
         std::cout << "PASS: falha no segundo pacote interrompe escrita e libera a colecao sem descritores ou referencias extras.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";

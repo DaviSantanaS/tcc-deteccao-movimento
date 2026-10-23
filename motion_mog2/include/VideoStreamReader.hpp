@@ -1,13 +1,16 @@
 #pragma once
 
-#include "EncodedVideoPackets.hpp"
+#include "AvPacket.hpp"
+#include "VideoStreamParameters.hpp"
 
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/core/cuda.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 class FfmpegRawVideoSource;
 
@@ -22,9 +25,11 @@ public:
 
     bool read(
         DecodedFrame& decoded_frame,
-        EncodedVideoPackets& encoded_video_packets,
+        std::vector<AvPacketPtr>& encoded_packets,
         cv::cuda::Stream& cuda_stream
     );
+
+    std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
 
     double fps() const;
     int width() const;
@@ -33,8 +38,8 @@ public:
 
 private:
     // Declarada antes do reader para permanecer viva durante sua destruicao.
-    cv::Ptr<FfmpegRawVideoSource> raw_video_source_;
-    cv::Ptr<cv::cudacodec::VideoReader> video_reader_;
+    cv::Ptr<FfmpegRawVideoSource> ffmpeg_video_source_;
+    cv::Ptr<cv::cudacodec::VideoReader> nvdec_video_reader_;
     size_t decoded_frame_retrieve_index_ = 0;
 
     double stream_fps_ = 0.0;

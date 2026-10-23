@@ -6,6 +6,7 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 extern "C" {
 #include <libavutil/avutil.h>
@@ -235,6 +236,20 @@ void writeMp4Packets(
             writeMp4Packet(mp4_output_context, *encoded_packet);
         }
     }
+}
+
+void writeMp4Packets(
+    AVFormatContext& mp4_output_context,
+    std::vector<AvPacketPtr> encoded_packets,
+    std::shared_ptr<const VideoStreamParameters> video_stream_parameters
+) {
+    EncodedVideoPackets packet_batch{
+        std::move(encoded_packets),
+        std::move(video_stream_parameters)
+    };
+    std::vector<EncodedVideoPackets> packet_batches;
+    packet_batches.push_back(std::move(packet_batch));
+    writeMp4Packets(mp4_output_context, std::move(packet_batches));
 }
 
 void writeMp4Trailer(AVFormatContext& mp4_output_context) {

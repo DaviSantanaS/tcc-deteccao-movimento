@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AvOutputIoContext.hpp"
+#include "AvPacket.hpp"
 #include "EncodedVideoPackets.hpp"
 
 extern "C" {
@@ -51,6 +52,14 @@ void writeMp4Packet(
 void writeMp4Packets(
     AVFormatContext& mp4_output_context,
     std::vector<EncodedVideoPackets> encoded_video_packets_by_read
+);
+
+// Adaptacao temporaria para a interface de colecoes acima, com as mesmas precondicoes.
+// Os argumentos transferidos sao liberados tambem em erro.
+void writeMp4Packets(
+    AVFormatContext& mp4_output_context,
+    std::vector<AvPacketPtr> encoded_packets,
+    std::shared_ptr<const VideoStreamParameters> video_stream_parameters
 );
 
 // Exige cabecalho escrito com sucesso e nenhuma falha anterior de gravacao.

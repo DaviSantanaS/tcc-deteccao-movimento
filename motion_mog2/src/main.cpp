@@ -1,7 +1,6 @@
 #include "AvOutputFormatContext.hpp"
 #include "AvOutputIoContext.hpp"
 #include "EncodedVideoBuffer.hpp"
-#include "EncodedVideoPackets.hpp"
 #include "VideoStreamReader.hpp"
 
 #include <opencv2/core/cuda.hpp>
@@ -66,6 +65,10 @@ int main(int argc, char** argv) {
         cv::cuda::setDevice(0);
 
         VideoStreamReader video_reader(input_source);
+        const auto video_stream_parameters = video_reader.videoStreamParameters();
+        if (!video_stream_parameters) {
+            throw std::invalid_argument("Os parametros da stream devem estar disponiveis apos construir o reader.");
+        }
         EncodedVideoBuffer encoded_video_buffer(target_decoded_frame_read_count);
         std::filesystem::create_directories(output_directory);
 
@@ -78,12 +81,11 @@ int main(int argc, char** argv) {
 
         cv::cuda::Stream cuda_stream;
         DecodedFrame decoded_frame;
-        EncodedVideoPackets encoded_video_packets;
+        std::vector<AvPacketPtr> encoded_packets;
 
         // O contexto MP4 deve ser destruido antes do I/O que ele referencia.
         AvOutputIoContextPtr output_io_context;
         AvOutputFormatContextPtr mp4_output_context;
-        std::shared_ptr<const VideoStreamParameters> recording_stream_parameters;
         std::filesystem::path current_output_file_path;
         std::size_t recording_decoded_read_count = 0;
         std::size_t recording_encoded_packet_count = 0;
@@ -91,17 +93,14 @@ int main(int argc, char** argv) {
         std::size_t completed_recording_count = 0;
         bool waiting_for_next_keyframe = false;
 
-        const auto write_packets_from_read = [&](EncodedVideoPackets&& packets_from_read) {
-            std::vector<EncodedVideoPackets> packets_to_write;
-            packets_to_write.push_back(std::move(packets_from_read));
-            writeMp4Packets(*mp4_output_context, std::move(packets_to_write));
+        const auto write_encoded_packets = [&](std::vector<AvPacketPtr>&& encoded_packets_to_write) {
+            writeMp4Packets(*mp4_output_context, std::move(encoded_packets_to_write), video_stream_parameters);
         };
         const auto finish_recording = [&]() {
-            writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedReadPackets());
+            writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedEncodedPackets(), video_stream_parameters);
             writeMp4Trailer(*mp4_output_context);
             mp4_output_context.reset();
             output_io_context.reset();
-            recording_stream_parameters.reset();
             ++completed_recording_count;
             std::cout << "MP4_SAVED path=" << current_output_file_path
                       << " decoded_reads=" << recording_decoded_read_count
@@ -110,56 +109,48 @@ int main(int argc, char** argv) {
         };
 
         while (keep_running) {
-            if (!video_reader.read(decoded_frame, encoded_video_packets, cuda_stream)) {
+            if (!video_reader.read(decoded_frame, encoded_packets, cuda_stream)) {
                 break;
             }
             cuda_stream.waitForCompletion();
 
-            for (const auto& packet : encoded_video_packets.encoded_packets) {
+            for (const auto& packet : encoded_packets) {
                 if (!packet) {
                     throw std::invalid_argument("A leitura retornou um AVPacket nulo.");
                 }
             }
-            if (mp4_output_context &&
-                encoded_video_packets.video_stream_parameters.get() != recording_stream_parameters.get()) {
-                throw std::runtime_error("A configuracao da stream mudou durante a gravacao.");
-            }
 
             if (!mp4_output_context || waiting_for_next_keyframe) {
                 auto next_keyframe = std::find_if(
-                    encoded_video_packets.encoded_packets.begin(),
-                    encoded_video_packets.encoded_packets.end(),
+                    encoded_packets.begin(),
+                    encoded_packets.end(),
                     [](const AvPacketPtr& packet) { return (packet->flags & AV_PKT_FLAG_KEY) != 0; }
                 );
-                if (!mp4_output_context && next_keyframe == encoded_video_packets.encoded_packets.end()) {
-                    skipped_initial_packet_count += encoded_video_packets.encoded_packets.size();
+                if (!mp4_output_context && next_keyframe == encoded_packets.end()) {
+                    skipped_initial_packet_count += encoded_packets.size();
                     continue;
                 }
-                if (next_keyframe != encoded_video_packets.encoded_packets.end()) {
+                if (next_keyframe != encoded_packets.end()) {
                     if (mp4_output_context) {
-                        EncodedVideoPackets packets_before_keyframe{{}, recording_stream_parameters};
-                        for (auto packet = encoded_video_packets.encoded_packets.begin(); packet != next_keyframe; ++packet) {
-                            packets_before_keyframe.encoded_packets.push_back(std::move(*packet));
+                        std::vector<AvPacketPtr> packets_before_keyframe;
+                        for (auto packet = encoded_packets.begin(); packet != next_keyframe; ++packet) {
+                            packets_before_keyframe.push_back(std::move(*packet));
                         }
-                        recording_encoded_packet_count += packets_before_keyframe.encoded_packets.size();
-                        write_packets_from_read(std::move(packets_before_keyframe));
+                        recording_encoded_packet_count += packets_before_keyframe.size();
+                        write_encoded_packets(std::move(packets_before_keyframe));
                         finish_recording();
                     } else {
                         skipped_initial_packet_count += static_cast<std::size_t>(
-                            next_keyframe - encoded_video_packets.encoded_packets.begin()
+                            next_keyframe - encoded_packets.begin()
                         );
                     }
-                    encoded_video_packets.encoded_packets.erase(
-                        encoded_video_packets.encoded_packets.begin(), next_keyframe
+                    encoded_packets.erase(
+                        encoded_packets.begin(), next_keyframe
                     );
                 }
             }
 
             if (!mp4_output_context) {
-                recording_stream_parameters = encoded_video_packets.video_stream_parameters;
-                if (!recording_stream_parameters) {
-                    throw std::invalid_argument("Os parametros da stream devem acompanhar os pacotes.");
-                }
                 const std::time_t recording_start_time = std::chrono::system_clock::to_time_t(
                     std::chrono::system_clock::now()
                 );
@@ -187,7 +178,7 @@ int main(int argc, char** argv) {
 
                 mp4_output_context = allocateMp4OutputContext();
                 mp4_output_context->avoid_negative_ts = AVFMT_AVOID_NEG_TS_MAKE_ZERO;
-                (void)createMp4VideoStream(*mp4_output_context, *recording_stream_parameters);
+                (void)createMp4VideoStream(*mp4_output_context, *video_stream_parameters);
                 output_io_context = openOutputFile(current_output_file_path);
                 writeMp4Header(*mp4_output_context, output_io_context);
                 recording_decoded_read_count = 0;
@@ -198,11 +189,11 @@ int main(int argc, char** argv) {
             }
 
             ++recording_decoded_read_count;
-            recording_encoded_packet_count += encoded_video_packets.encoded_packets.size();
+            recording_encoded_packet_count += encoded_packets.size();
             if (waiting_for_next_keyframe) {
-                write_packets_from_read(std::move(encoded_video_packets));
-            } else if (encoded_video_buffer.bufferPacketsFromRead(std::move(encoded_video_packets))) {
-                writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedReadPackets());
+                write_encoded_packets(std::move(encoded_packets));
+            } else if (encoded_video_buffer.bufferEncodedPackets(std::move(encoded_packets))) {
+                writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedEncodedPackets(), video_stream_parameters);
                 waiting_for_next_keyframe = true;
             }
         }

@@ -30,14 +30,14 @@ void FfmpegRawVideoSource::AvFormatContextDeleter::operator()(
 }
 
 FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_url)
-    : current_encoded_frame_packet(allocateAvPacket()) {
+    : current_encoded_packet(allocateAvPacket()) {
     openInput(input_url);
     initializeOpenCvFormat();
     video_stream_parameters = std::make_shared<const VideoStreamParameters>(
         *encoded_video_stream->codecpar,
         encoded_video_stream->time_base
     );
-    decoder_bitstream_filter = createH264AnnexBFilter(
+    annex_b_filter_for_nvdec = createH264AnnexBFilter(
         *video_stream_parameters->codec_parameters,
         video_stream_parameters->packet_timestamp_time_base
     );
@@ -48,7 +48,7 @@ std::shared_ptr<const VideoStreamParameters>
 FfmpegRawVideoSource::videoStreamParameters() const {
     return video_stream_parameters;
 }
-
+//input_url → input_rtsp_link
 void FfmpegRawVideoSource::openInput(const std::string& input_url) {
     AVFormatContext* opened_input_format_context = nullptr;
     const int open_input_result = avformat_open_input(
@@ -83,13 +83,15 @@ void FfmpegRawVideoSource::openInput(const std::string& input_url) {
         nullptr,
         0
     );
+
     if (selected_video_stream_index < 0) {
         throw std::runtime_error(
             "Nenhum stream de video foi encontrado: " +
             ffmpegErrorMessage(selected_video_stream_index)
         );
     }
-
+//verificar se é viavel fazer setter e getter
+//diferenciar variavel global de local
     encoded_video_stream =
         input_format_context->streams[selected_video_stream_index];
     encoded_video_stream_index = selected_video_stream_index;
@@ -157,7 +159,7 @@ void FfmpegRawVideoSource::updateFormat(
 }
 
 bool FfmpegRawVideoSource::lastPacketContainsKeyFrame() const {
-    return (current_encoded_frame_packet->flags & AV_PKT_FLAG_KEY) != 0;
+    return (current_encoded_packet->flags & AV_PKT_FLAG_KEY) != 0;
 }
 
 bool FfmpegRawVideoSource::get(int, double& property_value) const {
@@ -197,22 +199,22 @@ void FfmpegRawVideoSource::getExtraData(cv::Mat& extra_data) const {
 }
 
 bool FfmpegRawVideoSource::getNextPacket(
-    unsigned char** decoder_packet_data,
-    std::size_t* decoder_packet_size
+    unsigned char** encoded_packet_data_for_nvdec,
+    std::size_t* encoded_packet_size_bytes_for_nvdec
 ) {
-    if (decoder_packet_data == nullptr || decoder_packet_size == nullptr) {
+    if (encoded_packet_data_for_nvdec == nullptr || encoded_packet_size_bytes_for_nvdec == nullptr) {
         return false;
     }
 
-    *decoder_packet_data = nullptr;
-    *decoder_packet_size = 0;
-    current_decoder_packet.reset();
-    av_packet_unref(current_encoded_frame_packet.get());
+    *encoded_packet_data_for_nvdec = nullptr;
+    *encoded_packet_size_bytes_for_nvdec = 0;
+    current_encoded_packet_for_nvdec.reset();
+    av_packet_unref(current_encoded_packet.get());
 
     while (true) {
         const int packet_read_status = av_read_frame(
             video_source_context.get(),
-            current_encoded_frame_packet.get()
+            current_encoded_packet.get()
         );
 
         if (packet_read_status == AVERROR(EAGAIN)) {
@@ -223,36 +225,36 @@ bool FfmpegRawVideoSource::getNextPacket(
             return false;
         }
 
-        if (current_encoded_frame_packet->stream_index != encoded_video_stream_index ||
-            current_encoded_frame_packet->data == nullptr ||
-            current_encoded_frame_packet->size <= 0) {
-            av_packet_unref(current_encoded_frame_packet.get());
+        if (current_encoded_packet->stream_index != encoded_video_stream_index ||
+            current_encoded_packet->data == nullptr ||
+            current_encoded_packet->size <= 0) {
+            av_packet_unref(current_encoded_packet.get());
             continue;
         }
 
-        current_encoded_frame_packet->time_base = encoded_video_stream->time_base;
+        current_encoded_packet->time_base = encoded_video_stream->time_base;
 
         try {
-            auto decoder_packets = filterH264PacketToAnnexB(
-                *decoder_bitstream_filter,
-                *current_encoded_frame_packet
+            auto encoded_packets_for_nvdec = filterH264PacketToAnnexB(
+                *annex_b_filter_for_nvdec,
+                *current_encoded_packet
             );
-            if (decoder_packets.size() != 1 || !decoder_packets.front() ||
-                decoder_packets.front()->data == nullptr || decoder_packets.front()->size <= 0) {
+            if (encoded_packets_for_nvdec.size() != 1 || !encoded_packets_for_nvdec.front() ||
+                encoded_packets_for_nvdec.front()->data == nullptr || encoded_packets_for_nvdec.front()->size <= 0) {
                 CV_LOG_ERROR(nullptr,
                     "O filtro H.264 deve produzir um pacote valido por entrada para manter a contagem raw do OpenCV.");
                 return false;
             }
 
-            AvPacketPtr pending_packet = cloneAvPacket(*current_encoded_frame_packet);
+            AvPacketPtr pending_packet = cloneAvPacket(*current_encoded_packet);
             {
-                std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
-                encoded_frames_packets_buffer.push_back(std::move(pending_packet));
+                std::lock_guard<std::mutex> lock(encoded_packets_queue_mutex);
+                encoded_packets_queue.push_back(std::move(pending_packet));
             }
 
-            current_decoder_packet = std::move(decoder_packets.front());
-            *decoder_packet_data = current_decoder_packet->data;
-            *decoder_packet_size = static_cast<std::size_t>(current_decoder_packet->size);
+            current_encoded_packet_for_nvdec = std::move(encoded_packets_for_nvdec.front());
+            *encoded_packet_data_for_nvdec = current_encoded_packet_for_nvdec->data;
+            *encoded_packet_size_bytes_for_nvdec = static_cast<std::size_t>(current_encoded_packet_for_nvdec->size);
             return true;
         } catch (const std::exception& error) {
             CV_LOG_ERROR(nullptr, "Falha ao preparar o pacote para NVDEC: " << error.what());
@@ -264,13 +266,13 @@ bool FfmpegRawVideoSource::getNextPacket(
 std::vector<AvPacketPtr> FfmpegRawVideoSource::dequeueEncodedPackets(
     std::size_t packet_count
 ) {
-    std::lock_guard<std::mutex> lock(encoded_frames_packets_buffer_mutex);
+    std::lock_guard<std::mutex> lock(encoded_packets_queue_mutex);
 
-    if (encoded_frames_packets_buffer.size() < packet_count) {
+    if (encoded_packets_queue.size() < packet_count) {
         throw std::runtime_error(
             "Fila de AVPacket dessincronizada: esperados " +
             std::to_string(packet_count) + ", disponiveis " +
-            std::to_string(encoded_frames_packets_buffer.size()) + "."
+            std::to_string(encoded_packets_queue.size()) + "."
         );
     }
 
@@ -278,8 +280,8 @@ std::vector<AvPacketPtr> FfmpegRawVideoSource::dequeueEncodedPackets(
     packets.reserve(packet_count);
 
     for (std::size_t index = 0; index < packet_count; ++index) {
-        packets.push_back(std::move(encoded_frames_packets_buffer.front()));
-        encoded_frames_packets_buffer.pop_front();
+        packets.push_back(std::move(encoded_packets_queue.front()));
+        encoded_packets_queue.pop_front();
     }
 
     return packets;

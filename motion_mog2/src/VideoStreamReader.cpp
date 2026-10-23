@@ -11,13 +11,13 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
     reader_params.rawMode = true;
     reader_params.udpSource = true;
 
-    raw_video_source_ = cv::makePtr<FfmpegRawVideoSource>(rtsp_url);
-    video_reader_ = cv::cudacodec::createVideoReader(
-        raw_video_source_,
+    ffmpeg_video_source_ = cv::makePtr<FfmpegRawVideoSource>(rtsp_url);
+    nvdec_video_reader_ = cv::cudacodec::createVideoReader(
+        ffmpeg_video_source_,
         reader_params
     );
 
-    const cv::cudacodec::FormatInfo stream_format = video_reader_->format();
+    const cv::cudacodec::FormatInfo stream_format = nvdec_video_reader_->format();
     stream_fps_ = stream_format.fps;
     decoded_frame_width_ = stream_format.width;
     decoded_frame_height_ = stream_format.height;
@@ -37,7 +37,7 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
     }
 
     double decoded_frame_retrieve_index_value = -1.0;
-    if (!video_reader_->get(
+    if (!nvdec_video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_DECODED_FRAME_IDX,
             decoded_frame_retrieve_index_value)) {
         throw std::runtime_error(
@@ -51,36 +51,42 @@ VideoStreamReader::VideoStreamReader(const std::string& rtsp_url) {
 
 bool VideoStreamReader::read(
     DecodedFrame& decoded_frame,
-    EncodedVideoPackets& encoded_video_packets,
+    std::vector<AvPacketPtr>& encoded_packets,
     cv::cuda::Stream& cuda_stream
 ) {
-    if (!video_reader_->grab(cuda_stream)) {
+    if (!nvdec_video_reader_->grab(cuda_stream)) {
         return false;
     }
 
-    if (!video_reader_->retrieve(
+    if (!nvdec_video_reader_->retrieve(
             decoded_frame.decoded_frame_gpu,
             decoded_frame_retrieve_index_) ||
         decoded_frame.decoded_frame_gpu.empty()) {
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
 
-    double encoded_packet_count_value = 0.0;
-    if (!video_reader_->get(
+    double encoded_packet_count_from_grab_value = 0.0;
+    if (!nvdec_video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-            encoded_packet_count_value)) {
+            encoded_packet_count_from_grab_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter a quantidade de pacotes codificados."
         );
     }
 
-    const size_t encoded_packet_count = static_cast<size_t>(encoded_packet_count_value);
-    encoded_video_packets =
-        raw_video_source_->takePacketsWithStreamParameters(encoded_packet_count);
+    const size_t encoded_packet_count_from_grab =
+        static_cast<size_t>(encoded_packet_count_from_grab_value);
+    encoded_packets =
+        ffmpeg_video_source_->dequeueEncodedPackets(encoded_packet_count_from_grab);
 
     decoded_frame.decoded_frame_index = next_decoded_frame_index_;
     ++next_decoded_frame_index_;
     return true;
+}
+
+std::shared_ptr<const VideoStreamParameters>
+VideoStreamReader::videoStreamParameters() const {
+    return ffmpeg_video_source_->videoStreamParameters();
 }
 
 double VideoStreamReader::fps() const {
