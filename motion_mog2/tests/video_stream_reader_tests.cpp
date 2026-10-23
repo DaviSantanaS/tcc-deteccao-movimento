@@ -1,6 +1,8 @@
 #include "VideoStreamReader.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -50,7 +52,7 @@ int main(int argc, char** argv) {
             DecodedFrame decoded_frame;
             std::vector<AvPacketPtr> encoded_packets;
 
-            for (uint64_t expected_frame_index = 0; expected_frame_index < 3; ++expected_frame_index) {
+            for (std::uint64_t expected_frame_index = 0; expected_frame_index < 3; ++expected_frame_index) {
                 if (!video_reader.read(decoded_frame, encoded_packets, cuda_stream)) {
                     throw std::runtime_error("O arquivo deve fornecer pelo menos tres frames decodificados.");
                 }

@@ -1,5 +1,6 @@
 #include "AvCodecParameters.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -67,10 +68,10 @@ int main() {
         source_codec_parameters->width = 1920;
         source_codec_parameters->height = 1080;
 
-        constexpr uint8_t expected_codec_extra_data[] = {0x01, 0x02, 0x03};
+        constexpr std::uint8_t expected_codec_extra_data[] = {0x01, 0x02, 0x03};
         constexpr int codec_extra_data_size =
             static_cast<int>(sizeof(expected_codec_extra_data));
-        source_codec_parameters->extradata = static_cast<uint8_t*>(
+        source_codec_parameters->extradata = static_cast<std::uint8_t*>(
             av_mallocz(codec_extra_data_size + AV_INPUT_BUFFER_PADDING_SIZE)
         );
         if (!source_codec_parameters->extradata) {

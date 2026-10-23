@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -36,19 +38,19 @@ public:
         if (!created_directory_path) {
             throw std::runtime_error("Nao foi possivel criar a pasta temporaria do teste.");
         }
-        directory_path_ = created_directory_path;
+        this->directory_path_ = created_directory_path;
     }
 
     ~ScopedTemporaryDirectory() {
         std::error_code cleanup_error;
-        std::filesystem::remove_all(directory_path_, cleanup_error);
+        std::filesystem::remove_all(this->directory_path_, cleanup_error);
     }
 
     ScopedTemporaryDirectory(const ScopedTemporaryDirectory&) = delete;
     ScopedTemporaryDirectory& operator=(const ScopedTemporaryDirectory&) = delete;
 
     const std::filesystem::path& path() const noexcept {
-        return directory_path_;
+        return this->directory_path_;
     }
 
 private:
@@ -673,7 +675,7 @@ int main() {
                     throw std::runtime_error("O I/O deve estar sem erro antes da falha injetada de trailer.");
                 }
                 const auto original_write_packet = failed_trailer_io_context->write_packet;
-                failed_trailer_io_context->write_packet = [](void*, uint8_t*, int) { return AVERROR(EIO); };
+                failed_trailer_io_context->write_packet = [](void*, std::uint8_t*, int) { return AVERROR(EIO); };
                 bool trailer_failure_reported = false;
                 try {
                     writeMp4Trailer(*failed_trailer_format_context);

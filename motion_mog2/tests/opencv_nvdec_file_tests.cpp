@@ -3,6 +3,7 @@
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/cudacodec.hpp>
 
+#include <cstddef>
 #include <iostream>
 #include <stdexcept>
 

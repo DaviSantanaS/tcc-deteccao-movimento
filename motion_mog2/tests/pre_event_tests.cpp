@@ -2,6 +2,8 @@
 #include "PreEventConfig.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -26,15 +28,15 @@ void requireFailure(const std::function<void()>& operation) {
     require(failed, "A entrada invalida foi aceita.");
 }
 
-EncodedPacket makePacket(uint64_t index, bool key_frame) {
+EncodedPacket makePacket(std::uint64_t index, bool key_frame) {
     AvPacketPtr av_packet = allocateAvPacket();
     const int packet_size = static_cast<int>(index % 7 + 1);
     if (av_new_packet(av_packet.get(), packet_size) < 0) {
         throw std::runtime_error("Nao foi possivel alocar o payload do teste.");
     }
     std::memset(av_packet->data, static_cast<unsigned char>(index % 256), packet_size);
-    av_packet->pts = static_cast<int64_t>(index);
-    av_packet->dts = static_cast<int64_t>(index);
+    av_packet->pts = static_cast<std::int64_t>(index);
+    av_packet->dts = static_cast<std::int64_t>(index);
     av_packet->duration = 1;
     av_packet->time_base = AVRational{1, 100};
     av_packet->flags = key_frame ? AV_PKT_FLAG_KEY : 0;
@@ -47,15 +49,15 @@ EncodedPacket makePacket(uint64_t index, bool key_frame) {
     return packet;
 }
 
-void feed(EncodedVideoBuffer& buffer, uint64_t first, uint64_t last) {
-    for (uint64_t index = first; index <= last; ++index) {
+void feed(EncodedVideoBuffer& buffer, std::uint64_t first, std::uint64_t last) {
+    for (std::uint64_t index = first; index <= last; ++index) {
         buffer.updatePreEventBuffer({makePacket(index, index % 60 == 0)}, index);
     }
 }
 
-size_t expectedBytes(uint64_t first, uint64_t last) {
-    size_t bytes = 0;
-    for (uint64_t index = first; index <= last; ++index) {
+std::size_t expectedBytes(std::uint64_t first, std::uint64_t last) {
+    std::size_t bytes = 0;
+    for (std::uint64_t index = first; index <= last; ++index) {
         bytes += index % 7 + 1;
     }
     return bytes;
@@ -125,7 +127,7 @@ void testInsufficientHistory() {
     require(info.gop_encoded_packet_count == 31, "Historico inicial incorreto.");
     require(!info.pre_event_history_sufficient, "Nao pode prometer 150 frames.");
 
-    EncodedVideoBuffer large_buffer(std::numeric_limits<uint64_t>::max());
+    EncodedVideoBuffer large_buffer(std::numeric_limits<std::uint64_t>::max());
     feed(large_buffer, 0, 10);
     const auto large_info = large_buffer.startMotion(10, {makePacket(10, false)});
     require(large_info.start_decoded_frame_index == 0, "Subtracao sem underflow.");
@@ -134,7 +136,7 @@ void testInsufficientHistory() {
 
 void testMissingAndLateKeyframe() {
     EncodedVideoBuffer buffer(150);
-    for (uint64_t index = 0; index < 60; ++index) {
+    for (std::uint64_t index = 0; index < 60; ++index) {
         buffer.updatePreEventBuffer({makePacket(index, false)}, index);
     }
     const auto missing = buffer.startMotion(59, {makePacket(59, false)});
@@ -182,7 +184,7 @@ void testHistorySurvivesPreviousEvent() {
     EncodedVideoBuffer buffer(100);
     feed(buffer, 0, 200);
     buffer.startMotion(200, {makePacket(200, false)});
-    for (uint64_t index = 201; index <= 230; ++index) {
+    for (std::uint64_t index = 201; index <= 230; ++index) {
         const std::vector<EncodedPacket> packets{makePacket(index, false)};
         buffer.updatePreEventBuffer(packets, index);
         buffer.appendMotionPackets(packets);

@@ -32,8 +32,13 @@ public:
     bool lastPacketContainsKeyFrame() const override;
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
+
+    [[nodiscard]]
     std::vector<AvPacketPtr> dequeueEncodedPackets(std::size_t packet_count);
+
+    [[nodiscard]]
     EncodedVideoPackets dequeueEncodedPacketsWithStreamParameters(std::size_t packet_count);
+
     std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;

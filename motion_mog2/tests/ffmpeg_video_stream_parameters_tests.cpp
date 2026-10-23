@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -22,7 +23,7 @@ int main(int argc, char** argv) {
         int original_width = 0;
         int original_height = 0;
         AVRational original_packet_timestamp_time_base{0, 1};
-        std::vector<uint8_t> original_codec_extra_data;
+        std::vector<std::uint8_t> original_codec_extra_data;
 
         {
             FfmpegRawVideoSource video_source(argv[1]);

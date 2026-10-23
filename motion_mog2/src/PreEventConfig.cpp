@@ -1,11 +1,13 @@
 #include "PreEventConfig.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 
 double parsePreEventSeconds(const std::string& pre_event_seconds_text) {
-    size_t parsed_character_count = 0;
+    std::size_t parsed_character_count = 0;
     double pre_event_seconds = 0.0;
 
     try {
@@ -24,7 +26,7 @@ double parsePreEventSeconds(const std::string& pre_event_seconds_text) {
     return pre_event_seconds;
 }
 
-uint64_t calculatePreEventFrameCount(double pre_event_seconds, double stream_fps) {
+std::uint64_t calculatePreEventFrameCount(double pre_event_seconds, double stream_fps) {
     if (!std::isfinite(pre_event_seconds) || pre_event_seconds < 0.0 ||
         !std::isfinite(stream_fps) || stream_fps <= 0.0) {
         throw std::runtime_error("Tempo de pre-evento ou FPS invalido.");
@@ -32,7 +34,7 @@ uint64_t calculatePreEventFrameCount(double pre_event_seconds, double stream_fps
 
     const double rounded_frame_count = std::ceil(pre_event_seconds * stream_fps);
     const double frame_count_upper_bound =
-        std::ldexp(1.0, std::numeric_limits<uint64_t>::digits);
+        std::ldexp(1.0, std::numeric_limits<std::uint64_t>::digits);
 
     if (!std::isfinite(rounded_frame_count) ||
         rounded_frame_count >= frame_count_upper_bound) {
@@ -43,5 +45,5 @@ uint64_t calculatePreEventFrameCount(double pre_event_seconds, double stream_fps
         return 1;
     }
 
-    return static_cast<uint64_t>(rounded_frame_count);
+    return static_cast<std::uint64_t>(rounded_frame_count);
 }

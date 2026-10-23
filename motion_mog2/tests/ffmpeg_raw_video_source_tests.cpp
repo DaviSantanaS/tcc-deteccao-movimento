@@ -1,5 +1,6 @@
 #include "FfmpegRawVideoSource.hpp"
 
+#include <cstddef>
 #include <cstring>
 #include <exception>
 #include <iostream>

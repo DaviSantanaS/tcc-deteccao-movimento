@@ -1,6 +1,7 @@
 #include "AvPacket.hpp"
 
 #include <cassert>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 
@@ -33,7 +34,7 @@ int main() {
     assert(cloned_packet->pts == 123);
 
     AVPacket* const original_packet = cloned_packet.get();
-    const uint8_t* const original_data = cloned_packet->data;
+    const std::uint8_t* const original_data = cloned_packet->data;
     const AVBufferRef* const original_buffer = cloned_packet->buf;
     cloned_packet->pts = 90000;
     cloned_packet->dts = 81000;

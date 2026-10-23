@@ -28,20 +28,20 @@ public:
 
     MotionState detectMotion(
         const cv::cuda::GpuMat& decoded_frame_gpu,
-        uint64_t decoded_frame_index,
+        std::uint64_t decoded_frame_index,
         cv::cuda::Stream& cuda_stream
     );
 
-    uint64_t warmupFrameCount() const;
+    std::uint64_t warmupFrameCount() const;
     bool isMotionActive() const;
 
 private:
-    int64_t decoded_frame_pixel_count_ = 0;
+    std::int64_t decoded_frame_pixel_count_ = 0;
     double motion_threshold_ratio_ = 0.0;
     int motion_start_frame_count_ = 0;
     int motion_end_frame_count_ = 0;
     double learning_rate_ = 0.0;
-    uint64_t warmup_frame_count_ = 0;
+    std::uint64_t warmup_frame_count_ = 0;
 
     cv::Ptr<cv::cuda::BackgroundSubtractorMOG2> mog2_detector_;
     cv::Ptr<cv::cuda::Filter> morphology_filter_;

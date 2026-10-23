@@ -1,35 +1,42 @@
 #include "EncodedVideoBuffer.hpp"
 
+#include <algorithm>
+#include <cstddef>
 #include <stdexcept>
 #include <utility>
 
-EncodedVideoBuffer::EncodedVideoBuffer(std::size_t max_buffered_read_count)
-    : max_buffered_read_count_(max_buffered_read_count) {
-    if (max_buffered_read_count_ == 0) {
+EncodedVideoBuffer::EncodedVideoBuffer(std::size_t max_buffered_packet_count)
+    : max_buffered_packet_count_(max_buffered_packet_count) {
+    if (this->max_buffered_packet_count_ == 0) {
         throw std::invalid_argument(
-            "O limite de leituras deve ser maior que zero."
+            "O limite de pacotes deve ser maior que zero."
         );
     }
 }
-//verificar essas chamadas de função
-bool EncodedVideoBuffer::bufferEncodedPackets(std::vector<AvPacketPtr>&& encoded_packets_to_buffer) {
-    if (buffered_read_count_ >= max_buffered_read_count_) {
-        throw std::length_error("O buffer atingiu o limite de leituras.");
+
+void EncodedVideoBuffer::appendPackets(std::vector<AvPacketPtr>& pending_encoded_packets) {
+    if (this->isFull()) {
+        return;
     }
 
-    encoded_packets_buffer_.reserve(encoded_packets_buffer_.size() + encoded_packets_to_buffer.size());
-    for (auto& encoded_packet : encoded_packets_to_buffer) {
-        encoded_packets_buffer_.push_back(std::move(encoded_packet));
+    const std::size_t remaining_packet_capacity =
+        this->max_buffered_packet_count_ - this->encoded_packets_buffer_.size();
+    const std::size_t packets_to_insert =
+        std::min(remaining_packet_capacity, pending_encoded_packets.size());
+
+    this->encoded_packets_buffer_.reserve(this->encoded_packets_buffer_.size() + packets_to_insert);
+    for (std::size_t packet_index = 0; packet_index < packets_to_insert; ++packet_index) {
+        this->encoded_packets_buffer_.push_back(std::move(pending_encoded_packets[packet_index]));
     }
-    encoded_packets_to_buffer.clear();
-    ++buffered_read_count_;
-    return buffered_read_count_ == max_buffered_read_count_;
+    pending_encoded_packets.erase(
+        pending_encoded_packets.begin(),
+        pending_encoded_packets.begin() + static_cast<std::ptrdiff_t>(packets_to_insert)
+    );
 }
 
 std::vector<AvPacketPtr>
 EncodedVideoBuffer::takeBufferedEncodedPackets() {
     std::vector<AvPacketPtr> transferred_encoded_packets;
-    transferred_encoded_packets.swap(encoded_packets_buffer_);
-    buffered_read_count_ = 0;
+    transferred_encoded_packets.swap(this->encoded_packets_buffer_);
     return transferred_encoded_packets;
 }

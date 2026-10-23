@@ -88,15 +88,15 @@ std::vector<AvPacketPtr> filterH264PacketToAnnexB(
         );
     }
 
-    std::vector<AvPacketPtr> encoded_packets_for_nvdec;
+    std::vector<AvPacketPtr> annex_b_packets;
     while (true) {
-        AvPacketPtr encoded_packet_for_nvdec = allocateAvPacket();
+        AvPacketPtr annex_b_packet = allocateAvPacket();
         const int packet_receive_result = av_bsf_receive_packet(
             &annex_b_filter_context,
-            encoded_packet_for_nvdec.get()
+            annex_b_packet.get()
         );
         if (packet_receive_result == AVERROR(EAGAIN) || packet_receive_result == AVERROR_EOF) {
-            return encoded_packets_for_nvdec;
+            return annex_b_packets;
         }
         if (packet_receive_result < 0) {
             throw std::runtime_error(
@@ -105,7 +105,7 @@ std::vector<AvPacketPtr> filterH264PacketToAnnexB(
             );
         }
 
-        encoded_packet_for_nvdec->time_base = annex_b_filter_context.time_base_out;
-        encoded_packets_for_nvdec.push_back(std::move(encoded_packet_for_nvdec));
+        annex_b_packet->time_base = annex_b_filter_context.time_base_out;
+        annex_b_packets.push_back(std::move(annex_b_packet));
     }
 }
