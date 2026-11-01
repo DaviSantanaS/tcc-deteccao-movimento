@@ -3,8 +3,10 @@ set -euo pipefail
 
 show_usage() {
   printf '%s\n' \
-    'Uso: bash run_rtsp_recording.sh [arquivo_h264] [diretorio_saida] [leituras_por_trecho]' \
-    'Padroes: ~/Vídeos/tcc/video_h264_fhd_60fps.mp4, recordings do projeto, 1000 leituras.' \
+    'Uso: bash run_rtsp_recording.sh [arquivo_h264] [diretorio_saida] [pacotes_por_trecho]' \
+    '     bash run_rtsp_recording.sh --webcam [diretorio_saida] [pacotes_por_trecho]' \
+    'Padroes: ~/Vídeos/tcc/video_h264_fhd_60fps.mp4, recordings do projeto, 1000 pacotes.' \
+    'Webcam: /dev/video0 em YUYV, 640x480 a 30 FPS; FFmpeg codifica H.264 para a entrada RTSP.' \
     'RTSP local: rtsp://127.0.0.1:8554/video; corte dos MP4s no proximo keyframe.' \
     'SHOW_PREVIEW=0 desativa a janela; RTSP_TRANSPORT=tcp troca UDP por TCP no publicador e na previa.' \
     'MEDIAMTX_BIN e OPENCV_DIR permitem ajustar os caminhos das dependencias.' \
@@ -103,9 +105,14 @@ if (( $# > 3 )); then
 fi
 
 repo_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-input_video_path="${1-${HOME}/Vídeos/tcc/video_h264_fhd_60fps.mp4}"
+input_source="${1-${HOME}/Vídeos/tcc/video_h264_fhd_60fps.mp4}"
+source_is_webcam=0
+if [[ "${input_source}" == --webcam ]]; then
+  input_source='/dev/video0'
+  source_is_webcam=1
+fi
 output_directory="${2-${repo_directory}/recordings}"
-target_decoded_reads="${3-1000}"
+target_packet_count="${3-1000}"
 rtsp_transport="${RTSP_TRANSPORT:-udp}"
 show_preview="${SHOW_PREVIEW:-1}"
 mediamtx_binary="${MEDIAMTX_BIN:-/home/davi/Downloads/tcc/mediamtx}"
@@ -113,28 +120,35 @@ opencv_directory="${OPENCV_DIR:-/home/davi/Downloads/tcc/opencv/install-cuda125/
 build_directory="${repo_directory}/motion_mog2/cmake-build-debug"
 rtsp_url='rtsp://127.0.0.1:8554/video'
 
-[[ "${target_decoded_reads}" =~ ^[0-9]+$ && ! "${target_decoded_reads}" =~ ^0+$ ]] ||
-  fail 'O alvo de leituras deve ser um inteiro positivo.'
-target_decoded_reads="${target_decoded_reads#"${target_decoded_reads%%[!0]*}"}"
-if (( ${#target_decoded_reads} > 20 )) ||
-   { (( ${#target_decoded_reads} == 20 )) && [[ "${target_decoded_reads}" > 18446744073709551615 ]]; }; then
-  fail 'O alvo de leituras excede o limite de 64 bits do gravador.'
+[[ "${target_packet_count}" =~ ^[0-9]+$ && ! "${target_packet_count}" =~ ^0+$ ]] ||
+  fail 'O alvo de pacotes deve ser um inteiro positivo.'
+target_packet_count="${target_packet_count#"${target_packet_count%%[!0]*}"}"
+if (( ${#target_packet_count} > 20 )) ||
+   { (( ${#target_packet_count} == 20 )) && [[ "${target_packet_count}" > 18446744073709551615 ]]; }; then
+  fail 'O alvo de pacotes excede o limite de 64 bits do gravador.'
 fi
 [[ "${rtsp_transport}" == udp || "${rtsp_transport}" == tcp ]] || fail 'RTSP_TRANSPORT deve ser udp ou tcp.'
 [[ "${show_preview}" == 0 || "${show_preview}" == 1 ]] || fail 'SHOW_PREVIEW deve ser 0 ou 1.'
 [[ -n "${output_directory}" ]] || fail 'O diretorio de saida nao pode ser vazio.'
-[[ -f "${input_video_path}" && -r "${input_video_path}" ]] || fail "Video inexistente ou sem leitura: ${input_video_path}"
+if [[ "${source_is_webcam}" == 1 ]]; then
+  [[ -c "${input_source}" ]] || fail "Dispositivo de webcam inexistente: ${input_source}"
+  [[ -r "${input_source}" && -w "${input_source}" ]] || fail "Webcam sem permissao de leitura/escrita: ${input_source}"
+else
+  [[ -f "${input_source}" && -r "${input_source}" ]] || fail "Video inexistente ou sem leitura: ${input_source}"
+fi
 [[ -x "${mediamtx_binary}" ]] || fail "MediaMTX inexistente ou sem permissao de execucao: ${mediamtx_binary}"
 
 for required_command in ffmpeg ffprobe cmake ss setsid timeout realpath mktemp tail; do
   require_command "${required_command}"
 done
-input_video_path="$(realpath -- "${input_video_path}")"
+input_source="$(realpath -- "${input_source}")"
 output_directory="$(realpath -m -- "${output_directory}")"
-source_codec="$(timeout -k 1 5 ffprobe -v error -select_streams v:0 \
-  -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 \
-  "${input_video_path}")" || fail 'Nao foi possivel consultar o video de entrada.'
-[[ "${source_codec}" == h264 ]] || fail "O MVP exige H.264; codec encontrado: ${source_codec:-nenhum}. Nao sera feita conversao."
+if [[ "${source_is_webcam}" == 0 ]]; then
+  source_codec="$(timeout -k 1 5 ffprobe -v error -select_streams v:0 \
+    -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 \
+    "${input_source}")" || fail 'Nao foi possivel consultar o video de entrada.'
+  [[ "${source_codec}" == h264 ]] || fail "O MVP exige H.264; codec encontrado: ${source_codec:-nenhum}. Nao sera feita conversao."
+fi
 
 require_free_port -ltn 8554
 require_free_port -lun 8000
@@ -167,8 +181,8 @@ printf '%s\n' \
   'rtmp: false' 'hls: false' 'webrtc: false' 'srt: false' 'moq: false' \
   'paths:' '  video:' '    source: publisher' '    overridePublisher: false' \
   >"${run_directory}/mediamtx.yml"
-printf 'Video: %s\nRTSP: %s\nTransporte do publicador/previa: %s\nLogs: %s\n' \
-  "${input_video_path}" "${rtsp_url}" "${rtsp_transport}" "${run_directory}"
+printf 'Fonte: %s\nRTSP: %s\nTransporte do publicador/previa: %s\nLogs: %s\n' \
+  "${input_source}" "${rtsp_url}" "${rtsp_transport}" "${run_directory}"
 
 printf '\n[1/4] Compilando o gravador...\n'
 cmake -S "${repo_directory}/motion_mog2" -B "${build_directory}" \
@@ -183,9 +197,18 @@ setsid "${mediamtx_binary}" "${run_directory}/mediamtx.yml" >"${run_directory}/m
 mediamtx_pid=$!
 wait_for_rtsp_server
 
-printf '\n[3/4] Publicando H.264 em loop, sem transcoding...\n'
-setsid ffmpeg -hide_banner -loglevel info -nostdin -re -stream_loop -1 \
-  -i "${input_video_path}" -map 0:v:0 -an -c:v copy \
+if [[ "${source_is_webcam}" == 1 ]]; then
+  printf '\n[3/4] Capturando webcam e codificando H.264 para a entrada RTSP...\n'
+  publisher_input_arguments=(-f v4l2 -input_format yuyv422 -video_size 640x480 -framerate 30 -i "${input_source}")
+  publisher_video_arguments=(-c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p
+    -g 60 -keyint_min 60 -sc_threshold 0 -bf 0)
+else
+  printf '\n[3/4] Publicando H.264 em loop, sem transcoding...\n'
+  publisher_input_arguments=(-re -stream_loop -1 -i "${input_source}")
+  publisher_video_arguments=(-c:v copy)
+fi
+setsid ffmpeg -hide_banner -loglevel info -nostdin \
+  "${publisher_input_arguments[@]}" -map 0:v:0 -an "${publisher_video_arguments[@]}" \
   -f rtsp -rtsp_transport "${rtsp_transport}" "${rtsp_url}" \
   >"${run_directory}/ffmpeg.log" 2>&1 &
 publisher_pid=$!
@@ -200,7 +223,7 @@ if [[ "${show_preview}" == 1 ]]; then
 fi
 
 printf '\n[4/4] Gravando MP4s; Ctrl+C finaliza o trecho atual...\n'
-setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${target_decoded_reads}" \
+setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${target_packet_count}" \
   >"${run_directory}/recording.log" 2>&1 &
 recorder_pid=$!
 tail -n +1 -s 0.2 -f "${run_directory}/recording.log" &
