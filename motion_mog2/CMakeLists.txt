@@ -19,12 +19,12 @@ add_executable(
         src/buffers/EncodedVideoBuffer.cpp
         src/config/PreEventConfig.cpp
         src/ffmpeg/AvPacket.cpp
-        src/ffmpeg/AvOutputFormatContext.cpp
-        src/ffmpeg/AvOutputIoContext.cpp
+        src/ffmpeg/AvMp4OutputContext.cpp
+        src/ffmpeg/AvOutputFileContext.cpp
         src/ffmpeg/AvCodecParameters.cpp
         src/ffmpeg/AvBitstreamFilter.cpp
         src/ffmpeg/VideoStreamParameters.cpp
-        src/input/FfmpegRawVideoSource.cpp
+        src/input/FfmpegEncodedVideoSource.cpp
 )
 
 target_include_directories(
@@ -47,8 +47,8 @@ if(BUILD_TESTING)
     add_executable(
             av_output_io_context_tests
             tests/av_output_io_context_tests.cpp
-            src/ffmpeg/AvOutputIoContext.cpp
-            src/ffmpeg/AvOutputFormatContext.cpp
+            src/ffmpeg/AvOutputFileContext.cpp
+            src/ffmpeg/AvMp4OutputContext.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/VideoStreamParameters.cpp
             src/ffmpeg/AvCodecParameters.cpp
@@ -72,7 +72,7 @@ if(BUILD_TESTING)
     add_executable(
             av_output_format_context_tests
             tests/av_output_format_context_tests.cpp
-            src/ffmpeg/AvOutputFormatContext.cpp
+            src/ffmpeg/AvMp4OutputContext.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/VideoStreamParameters.cpp
             src/ffmpeg/AvCodecParameters.cpp
@@ -195,7 +195,7 @@ if(BUILD_TESTING)
             ffmpeg_video_stream_parameters_tests
             tests/ffmpeg_video_stream_parameters_tests.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
-            src/input/FfmpegRawVideoSource.cpp
+            src/input/FfmpegEncodedVideoSource.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/AvCodecParameters.cpp
             src/ffmpeg/VideoStreamParameters.cpp
@@ -219,7 +219,7 @@ if(BUILD_TESTING)
             ffmpeg_encoded_video_packets_tests
             tests/ffmpeg_encoded_video_packets_tests.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
-            src/input/FfmpegRawVideoSource.cpp
+            src/input/FfmpegEncodedVideoSource.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/AvCodecParameters.cpp
             src/ffmpeg/VideoStreamParameters.cpp
@@ -244,7 +244,7 @@ if(BUILD_TESTING)
             tests/video_stream_reader_tests.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/VideoStreamReader.cpp
-            src/input/FfmpegRawVideoSource.cpp
+            src/input/FfmpegEncodedVideoSource.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/AvCodecParameters.cpp
             src/ffmpeg/VideoStreamParameters.cpp

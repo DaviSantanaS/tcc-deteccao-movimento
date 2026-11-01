@@ -1,4 +1,4 @@
-#include "input/FfmpegRawVideoSource.hpp"
+#include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <opencv2/core/utils/logger.hpp>
 
@@ -24,13 +24,13 @@ std::string getFfmpegErrorMessage(int error_code) {
 
 }
 
-void FfmpegRawVideoSource::AvFormatContextDeleter::operator()(
+void FfmpegEncodedVideoSource::AvFormatContextDeleter::operator()(
     AVFormatContext* input_context
 ) const noexcept {
     avformat_close_input(&input_context);
 }
 
-FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_source)
+FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(const std::string& input_source)
     : current_encoded_packet_(allocateAvPacket()) {
     this->openInputAndSelectVideoStream(input_source);
     this->initializeVideoFormat();
@@ -46,11 +46,11 @@ FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_source)
 }
 
 std::shared_ptr<const VideoStreamParameters>
-FfmpegRawVideoSource::getVideoStreamParameters() const {
+FfmpegEncodedVideoSource::getVideoStreamParameters() const {
     return this->video_stream_parameters_;
 }
 
-void FfmpegRawVideoSource::openInputAndSelectVideoStream(const std::string& input_source) {
+void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(const std::string& input_source) {
     AVFormatContext* opened_input_format_context = nullptr;
     const int input_initialization_status = avformat_open_input(
         &opened_input_format_context,
@@ -98,7 +98,7 @@ void FfmpegRawVideoSource::openInputAndSelectVideoStream(const std::string& inpu
     this->video_source_context_ = std::move(input_format_context);
 }
 
-void FfmpegRawVideoSource::initializeVideoFormat() {
+void FfmpegEncodedVideoSource::initializeVideoFormat() {
     if (this->encoded_video_stream_ == nullptr ||
         this->encoded_video_stream_->codecpar == nullptr) {
         throw std::runtime_error(
@@ -140,11 +140,11 @@ void FfmpegRawVideoSource::initializeVideoFormat() {
     this->video_format_.fps = av_q2d(frame_rate);
 }
 
-cv::cudacodec::FormatInfo FfmpegRawVideoSource::format() const {
+cv::cudacodec::FormatInfo FfmpegEncodedVideoSource::format() const {
     return this->video_format_;
 }
 
-void FfmpegRawVideoSource::updateFormat(
+void FfmpegEncodedVideoSource::updateFormat(
     const cv::cudacodec::FormatInfo& updated_video_format
 ) {
     const double previous_stream_fps = this->video_format_.fps;
@@ -158,20 +158,20 @@ void FfmpegRawVideoSource::updateFormat(
     this->video_format_.valid = true;
 }
 
-bool FfmpegRawVideoSource::lastPacketContainsKeyFrame() const {
+bool FfmpegEncodedVideoSource::lastPacketContainsKeyFrame() const {
     return (this->current_encoded_packet_->flags & AV_PKT_FLAG_KEY) != 0;
 }
 
-bool FfmpegRawVideoSource::get(int, double& property_value) const {
+bool FfmpegEncodedVideoSource::get(int, double& property_value) const {
     property_value = 0.0;
     return false;
 }
 
-int FfmpegRawVideoSource::getFirstFrameIdx() const {
+int FfmpegEncodedVideoSource::getFirstFrameIdx() const {
     return 0;
 }
 
-void FfmpegRawVideoSource::copyVideoCodecExtraData() {
+void FfmpegEncodedVideoSource::copyVideoCodecExtraData() {
     const AVCodecParameters* codec_parameters =
         this->encoded_video_stream_->codecpar;
 
@@ -193,11 +193,11 @@ void FfmpegRawVideoSource::copyVideoCodecExtraData() {
     );
 }
 
-void FfmpegRawVideoSource::getExtraData(cv::Mat& extra_data) const {
+void FfmpegEncodedVideoSource::getExtraData(cv::Mat& extra_data) const {
     this->video_codec_extra_data_.copyTo(extra_data);
 }
 
-bool FfmpegRawVideoSource::getNextPacket(
+bool FfmpegEncodedVideoSource::getNextPacket(
     unsigned char** encoded_packet_data_for_nvdec,
     std::size_t* encoded_packet_size_bytes_for_nvdec
 ) {
@@ -262,7 +262,7 @@ bool FfmpegRawVideoSource::getNextPacket(
     }
 }
 
-std::vector<AvPacketPtr> FfmpegRawVideoSource::dequeueEncodedPackets(
+std::vector<AvPacketPtr> FfmpegEncodedVideoSource::dequeueEncodedPackets(
     std::size_t packet_count
 ) {
     std::lock_guard<std::mutex> lock(this->encoded_packets_queue_mutex_);
@@ -286,7 +286,7 @@ std::vector<AvPacketPtr> FfmpegRawVideoSource::dequeueEncodedPackets(
     return dequeued_packets;
 }
 
-EncodedVideoPackets FfmpegRawVideoSource::dequeueEncodedPacketsWithStreamParameters(
+EncodedVideoPackets FfmpegEncodedVideoSource::dequeueEncodedPacketsWithStreamParameters(
     std::size_t packet_count
 ) {
     return {

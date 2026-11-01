@@ -1,5 +1,5 @@
-#include "ffmpeg/AvOutputFormatContext.hpp"
-#include "ffmpeg/AvOutputIoContext.hpp"
+#include "ffmpeg/AvMp4OutputContext.hpp"
+#include "ffmpeg/AvOutputFileContext.hpp"
 #include "buffers/EncodedVideoBuffer.hpp"
 #include "input/VideoStreamReader.hpp"
 
@@ -84,8 +84,8 @@ int main(int argument_count, char** argument_values) {
         DecodedFrame decoded_frame;
         std::vector<AvPacketPtr> pending_encoded_packets;
 
-        AvOutputIoContextPtr output_io_context;
-        AvOutputFormatContextPtr mp4_output_context;
+        AvOutputFileContextPtr output_io_context;
+        AvMp4OutputContextPtr mp4_output_context;
         std::filesystem::path current_output_file_path;
         std::size_t recording_read_count = 0;
         std::size_t recording_encoded_packet_count = 0;

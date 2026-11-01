@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ffmpeg/AvOutputIoContext.hpp"
+#include "ffmpeg/AvOutputFileContext.hpp"
 #include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/EncodedVideoPackets.hpp"
 
@@ -13,14 +13,14 @@ extern "C" {
 
 struct VideoStreamParameters;
 
-struct AvOutputFormatContextDeleter {
+struct AvMp4OutputContextDeleter {
     void operator()(AVFormatContext* output_context) const noexcept;
 };
 
-using AvOutputFormatContextPtr =
-    std::unique_ptr<AVFormatContext, AvOutputFormatContextDeleter>;
+using AvMp4OutputContextPtr =
+    std::unique_ptr<AVFormatContext, AvMp4OutputContextDeleter>;
 
-[[nodiscard]] AvOutputFormatContextPtr allocateMp4OutputContext();
+[[nodiscard]] AvMp4OutputContextPtr allocateMp4OutputContext();
 
 [[nodiscard]] AVStream& createMp4VideoStream(
     AVFormatContext& mp4_output_context,
@@ -29,7 +29,7 @@ using AvOutputFormatContextPtr =
 
 void writeMp4Header(
     AVFormatContext& mp4_output_context,
-    const AvOutputIoContextPtr& output_io_context
+    const AvOutputFileContextPtr& output_io_context
 );
 
 void writeMp4Packet(

@@ -1,4 +1,4 @@
-#include "input/FfmpegRawVideoSource.hpp"
+#include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <cstddef>
 #include <cstring>
@@ -12,7 +12,7 @@ int main(int argument_count, char** argument_values) {
     }
 
     try {
-        FfmpegRawVideoSource valid_source(argument_values[1]);
+        FfmpegEncodedVideoSource valid_source(argument_values[1]);
         if (valid_source.format().codec != cv::cudacodec::Codec::H264) {
             std::cerr << "O codec da entrada valida nao foi identificado como H.264.\n";
             return 1;
@@ -124,7 +124,7 @@ int main(int argument_count, char** argument_values) {
     }
 
     try {
-        FfmpegRawVideoSource invalid_source(
+        FfmpegEncodedVideoSource invalid_source(
             "/tmp/tcc-entrada-de-video-inexistente.mp4"
         );
     } catch (const std::exception&) {

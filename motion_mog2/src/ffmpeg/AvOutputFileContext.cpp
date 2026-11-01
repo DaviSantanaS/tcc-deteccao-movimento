@@ -1,10 +1,10 @@
-#include "ffmpeg/AvOutputIoContext.hpp"
+#include "ffmpeg/AvOutputFileContext.hpp"
 
 #include <new>
 #include <stdexcept>
 #include <string>
 
-void AvOutputIoContextDeleter::operator()(
+void AvOutputFileContextDeleter::operator()(
     AVIOContext* output_io_context
 ) const noexcept {
     if (output_io_context) {
@@ -12,7 +12,7 @@ void AvOutputIoContextDeleter::operator()(
     }
 }
 
-AvOutputIoContextPtr openOutputFile(
+AvOutputFileContextPtr openOutputFile(
     const std::filesystem::path& output_file_path
 ) {
     if (output_file_path.empty() ||
@@ -32,7 +32,7 @@ AvOutputIoContextPtr openOutputFile(
     const int output_file_initialization_status = avio_open(
         &opened_output_io_context, local_file_url.c_str(), AVIO_FLAG_WRITE
     );
-    AvOutputIoContextPtr output_io_context{opened_output_io_context};
+    AvOutputFileContextPtr output_io_context{opened_output_io_context};
     if (output_file_initialization_status < 0) {
         throw std::runtime_error(
             "Nao foi possivel abrir o arquivo de saida: erro " +

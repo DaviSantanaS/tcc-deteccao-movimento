@@ -1,5 +1,5 @@
 #include "input/VideoStreamReader.hpp"
-#include "input/FfmpegRawVideoSource.hpp"
+#include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <opencv2/opencv.hpp>
 
@@ -13,7 +13,7 @@ VideoStreamReader::VideoStreamReader(const std::string& input_source) {
     reader_parameters.rawMode = true;
     reader_parameters.udpSource = true;
 
-    this->ffmpeg_video_source_ = cv::makePtr<FfmpegRawVideoSource>(input_source);
+    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(input_source);
     this->nvdec_video_reader_ = cv::cudacodec::createVideoReader(
         this->ffmpeg_video_source_,
         reader_parameters

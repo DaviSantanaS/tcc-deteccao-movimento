@@ -7,13 +7,13 @@ extern "C" {
 #include <filesystem>
 #include <memory>
 
-struct AvOutputIoContextDeleter {
+struct AvOutputFileContextDeleter {
     void operator()(AVIOContext* output_io_context) const noexcept;
 };
 
-using AvOutputIoContextPtr =
-    std::unique_ptr<AVIOContext, AvOutputIoContextDeleter>;
+using AvOutputFileContextPtr =
+    std::unique_ptr<AVIOContext, AvOutputFileContextDeleter>;
 
-[[nodiscard]] AvOutputIoContextPtr openOutputFile(
+[[nodiscard]] AvOutputFileContextPtr openOutputFile(
     const std::filesystem::path& output_file_path
 );

@@ -1,6 +1,6 @@
 #include "ffmpeg/AvBitstreamFilter.hpp"
 #include "EncodedBytesDiagnostics.hpp"
-#include "input/FfmpegRawVideoSource.hpp"
+#include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <array>
 #include <cstddef>
@@ -29,7 +29,7 @@ int main(int argument_count, char** argument_values) {
         std::vector<unsigned char> retained_filtered_packet_contents;
 
         {
-            FfmpegRawVideoSource video_source(argument_values[1]);
+            FfmpegEncodedVideoSource video_source(argument_values[1]);
             const auto expected_video_stream_parameters = video_source.getVideoStreamParameters();
             video_stream_parameters_lifetime = expected_video_stream_parameters;
             codec_parameters_lifetime = expected_video_stream_parameters->codec_parameters;

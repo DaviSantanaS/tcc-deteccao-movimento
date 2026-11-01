@@ -1,4 +1,4 @@
-#include "ffmpeg/AvOutputFormatContext.hpp"
+#include "ffmpeg/AvMp4OutputContext.hpp"
 #include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
@@ -13,7 +13,7 @@ extern "C" {
 #include <libavutil/rational.h>
 }
 
-void AvOutputFormatContextDeleter::operator()(
+void AvMp4OutputContextDeleter::operator()(
     AVFormatContext* output_context
 ) const noexcept {
     if (output_context) {
@@ -21,12 +21,12 @@ void AvOutputFormatContextDeleter::operator()(
     }
 }
 
-AvOutputFormatContextPtr allocateMp4OutputContext() {
+AvMp4OutputContextPtr allocateMp4OutputContext() {
     AVFormatContext* allocated_output_context = nullptr;
     const int output_context_allocation_status = avformat_alloc_output_context2(
         &allocated_output_context, nullptr, "mp4", nullptr
     );
-    AvOutputFormatContextPtr output_context{allocated_output_context};
+    AvMp4OutputContextPtr output_context{allocated_output_context};
 
     if (output_context_allocation_status < 0) {
         throw std::runtime_error(
@@ -91,7 +91,7 @@ AVStream& createMp4VideoStream(
 
 void writeMp4Header(
     AVFormatContext& mp4_output_context,
-    const AvOutputIoContextPtr& output_io_context
+    const AvOutputFileContextPtr& output_io_context
 ) {
     if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
         std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||

@@ -1,4 +1,4 @@
-#include "input/FfmpegRawVideoSource.hpp"
+#include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <array>
 #include <cmath>
@@ -26,7 +26,7 @@ int main(int argument_count, char** argument_values) {
         std::vector<std::uint8_t> original_codec_extra_data;
 
         {
-            FfmpegRawVideoSource video_source(argument_values[1]);
+            FfmpegEncodedVideoSource video_source(argument_values[1]);
             const auto first_video_stream_parameters = video_source.getVideoStreamParameters();
             const auto second_video_stream_parameters = video_source.getVideoStreamParameters();
             if (!first_video_stream_parameters ||

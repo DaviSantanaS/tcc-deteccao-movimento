@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-class FfmpegRawVideoSource;
+class FfmpegEncodedVideoSource;
 
 struct DecodedFrame {
     cv::cuda::GpuMat decoded_frame_gpu;
@@ -38,7 +38,7 @@ public:
     std::uint64_t getDecodedFrameCount() const;
 
 private:
-    cv::Ptr<FfmpegRawVideoSource> ffmpeg_video_source_;
+    cv::Ptr<FfmpegEncodedVideoSource> ffmpeg_video_source_;
     cv::Ptr<cv::cudacodec::VideoReader> nvdec_video_reader_;
     std::size_t decoded_frame_retrieval_index_ = 0;
 

@@ -1,5 +1,5 @@
 #include "ffmpeg/AvCodecParameters.hpp"
-#include "ffmpeg/AvOutputFormatContext.hpp"
+#include "ffmpeg/AvMp4OutputContext.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <array>
@@ -16,7 +16,7 @@ extern "C" {
 
 int main() {
     try {
-        AvOutputFormatContextPtr output_context = allocateMp4OutputContext();
+        AvMp4OutputContextPtr output_context = allocateMp4OutputContext();
         if (!output_context || !output_context->oformat ||
             !output_context->oformat->name ||
             std::strcmp(output_context->oformat->name, "mp4") != 0 ||
@@ -25,13 +25,13 @@ int main() {
             throw std::runtime_error("A alocacao deve configurar MP4 sem abrir arquivo nem criar streams.");
         }
 
-        AvOutputFormatContextPtr independent_output_context = allocateMp4OutputContext();
+        AvMp4OutputContextPtr independent_output_context = allocateMp4OutputContext();
         if (!independent_output_context ||
             independent_output_context.get() == output_context.get()) {
             throw std::runtime_error("Duas alocacoes devem possuir contextos independentes.");
         }
         AVFormatContext* allocated_output_context = output_context.get();
-        AvOutputFormatContextPtr moved_output_context = std::move(output_context);
+        AvMp4OutputContextPtr moved_output_context = std::move(output_context);
         if (output_context || moved_output_context.get() != allocated_output_context ||
             std::strcmp(moved_output_context->oformat->name, "mp4") != 0 ||
             moved_output_context->pb != nullptr || moved_output_context->nb_streams != 0) {
@@ -48,14 +48,14 @@ int main() {
         }
 
         {
-            AvOutputFormatContextPtr scoped_output_context = allocateMp4OutputContext();
+            AvMp4OutputContextPtr scoped_output_context = allocateMp4OutputContext();
             if (!scoped_output_context) {
                 throw std::runtime_error("O contexto de escopo deve ser valido antes da destruicao automatica.");
             }
         }
-        AvOutputFormatContextPtr empty_output_context;
+        AvMp4OutputContextPtr empty_output_context;
         empty_output_context.reset();
-        AvOutputFormatContextDeleter{}(nullptr);
+        AvMp4OutputContextDeleter{}(nullptr);
 
         std::cout << "PASS: contexto MP4 alocado sem arquivo aberto nem streams.\n";
         std::cout << "PASS: alocacoes independentes e transferencia de posse sem alterar o endereco.\n";
@@ -81,7 +81,7 @@ int main() {
 
         constexpr unsigned char expected_codec_extra_data[]{0x01, 0x02, 0x03};
         constexpr unsigned int source_codec_tag = 1234;
-        AvOutputFormatContextPtr video_output_context = allocateMp4OutputContext();
+        AvMp4OutputContextPtr video_output_context = allocateMp4OutputContext();
         {
             AvCodecParametersPtr source_codec_parameters = allocateAvCodecParameters();
             source_codec_parameters->codec_type = AVMEDIA_TYPE_VIDEO;
@@ -159,7 +159,7 @@ int main() {
         VideoStreamParameters parameters_without_extra_data{
             *source_without_extra_data, AVRational{1, 90000}
         };
-        AvOutputFormatContextPtr output_without_extra_data = allocateMp4OutputContext();
+        AvMp4OutputContextPtr output_without_extra_data = allocateMp4OutputContext();
         AVStream& stream_without_extra_data =
             createMp4VideoStream(*output_without_extra_data, parameters_without_extra_data);
         if (stream_without_extra_data.codecpar->extradata != nullptr ||
@@ -167,7 +167,7 @@ int main() {
             throw std::runtime_error("A configuracao sem extradata deve ser aceita nesta etapa.");
         }
 
-        AvOutputFormatContextPtr unconfigured_output_context{avformat_alloc_context()};
+        AvMp4OutputContextPtr unconfigured_output_context{avformat_alloc_context()};
         if (!unconfigured_output_context) {
             throw std::bad_alloc{};
         }
@@ -176,14 +176,14 @@ int main() {
         const int other_format_allocation_status = avformat_alloc_output_context2(
             &allocated_other_format_context, nullptr, "matroska", nullptr
         );
-        AvOutputFormatContextPtr other_format_context{allocated_other_format_context};
+        AvMp4OutputContextPtr other_format_context{allocated_other_format_context};
         if (other_format_allocation_status < 0 || !other_format_context) {
             throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para o teste.");
         }
         unchanged_stream_rejection_assertion(*other_format_context, parameters_without_extra_data);
 
         AVIOContext attached_io_context_marker{};
-        AvOutputFormatContextPtr empty_video_output_context = allocateMp4OutputContext();
+        AvMp4OutputContextPtr empty_video_output_context = allocateMp4OutputContext();
         const AVInputFormat* input_format_marker = av_find_input_format("h264");
         if (!input_format_marker) {
             throw std::runtime_error("Nao foi possivel obter um formato de entrada para o teste.");

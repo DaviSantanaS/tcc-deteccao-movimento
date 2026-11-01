@@ -1,6 +1,6 @@
 #include "ffmpeg/AvCodecParameters.hpp"
-#include "ffmpeg/AvOutputFormatContext.hpp"
-#include "ffmpeg/AvOutputIoContext.hpp"
+#include "ffmpeg/AvMp4OutputContext.hpp"
+#include "ffmpeg/AvOutputFileContext.hpp"
 #include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
@@ -88,14 +88,14 @@ int main() {
             const std::filesystem::path absolute_file_path = test_directory.getDirectoryPath() / "saída com espaços.bin";
             const std::string expected_contents{"A\0B", 3};
 
-            AvOutputIoContextPtr output_io_context = openOutputFile(absolute_file_path);
+            AvOutputFileContextPtr output_io_context = openOutputFile(absolute_file_path);
             if (!output_io_context || !output_io_context->write_flag ||
                 !std::filesystem::is_regular_file(absolute_file_path) ||
                 countOpenFileDescriptors() != initial_descriptor_count + 1) {
                 throw std::runtime_error("A abertura deve criar um arquivo local para escrita e possuir seu descritor.");
             }
             AVIOContext* opened_output_io_context = output_io_context.get();
-            AvOutputIoContextPtr moved_output_io_context = std::move(output_io_context);
+            AvOutputFileContextPtr moved_output_io_context = std::move(output_io_context);
             if (output_io_context || moved_output_io_context.get() != opened_output_io_context) {
                 throw std::runtime_error("O movimento deve transferir a posse do mesmo contexto de escrita.");
             }
@@ -117,7 +117,7 @@ int main() {
                 throw std::runtime_error("O segundo caminho de teste deve ser relativo.");
             }
             {
-                AvOutputIoContextPtr scoped_output_io_context = openOutputFile(relative_file_path);
+                AvOutputFileContextPtr scoped_output_io_context = openOutputFile(relative_file_path);
                 if (!scoped_output_io_context ||
                     countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("Um caminho relativo deve abrir o arquivo local correspondente.");
@@ -128,9 +128,9 @@ int main() {
                 std::filesystem::file_size(test_directory.getDirectoryPath() / "relative.bin") != 0) {
                 throw std::runtime_error("A destruicao por escopo deve fechar o arquivo aberto por caminho relativo.");
             }
-            AvOutputIoContextPtr empty_output_io_context;
+            AvOutputFileContextPtr empty_output_io_context;
             empty_output_io_context.reset();
-            AvOutputIoContextDeleter{}(nullptr);
+            AvOutputFileContextDeleter{}(nullptr);
 
             const auto invalid_path_rejection_assertion = [](const std::filesystem::path& file_path) {
                 const std::size_t previous_descriptor_count = countOpenFileDescriptors();
@@ -217,7 +217,7 @@ int main() {
             };
             const auto header_precondition_rejection_assertion = [](
                 AVFormatContext& mp4_output_context,
-                const AvOutputIoContextPtr& io_context
+                const AvOutputFileContextPtr& io_context
             ) {
                 AVIOContext* previous_io_context = mp4_output_context.pb;
                 const auto previous_stream_count = mp4_output_context.nb_streams;
@@ -270,7 +270,7 @@ int main() {
                     header_precondition_rejection_assertion(*context_without_stream, validation_io_context);
                 }
                 auto validation_format_context = video_output_context_factory();
-                AvOutputIoContextPtr missing_io_context;
+                AvOutputFileContextPtr missing_io_context;
                 header_precondition_rejection_assertion(*validation_format_context, missing_io_context);
                 validation_format_context->iformat = av_find_input_format("h264");
                 if (!validation_format_context->iformat) {
@@ -309,7 +309,7 @@ int main() {
                 const int non_mp4_allocation_status = avformat_alloc_output_context2(
                     &allocated_non_mp4_context, nullptr, "matroska", nullptr
                 );
-                AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
+                AvMp4OutputContextPtr non_mp4_context{allocated_non_mp4_context};
                 if (non_mp4_allocation_status < 0 || !non_mp4_context) {
                     throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o cabecalho.");
                 }
@@ -420,7 +420,7 @@ int main() {
                     const int non_mp4_allocation_status = avformat_alloc_output_context2(
                         &allocated_non_mp4_context, nullptr, "matroska", nullptr
                     );
-                    AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
+                    AvMp4OutputContextPtr non_mp4_context{allocated_non_mp4_context};
                     if (non_mp4_allocation_status < 0 || !non_mp4_context) {
                         throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o pacote.");
                     }
@@ -577,7 +577,7 @@ int main() {
                     const int non_mp4_allocation_status = avformat_alloc_output_context2(
                         &allocated_non_mp4_context, nullptr, "matroska", nullptr
                     );
-                    AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
+                    AvMp4OutputContextPtr non_mp4_context{allocated_non_mp4_context};
                     if (non_mp4_allocation_status < 0 || !non_mp4_context) {
                         throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o trailer.");
                     }

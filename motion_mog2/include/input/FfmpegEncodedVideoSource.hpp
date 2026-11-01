@@ -18,9 +18,9 @@ extern "C" {
 #include <string>
 #include <vector>
 
-class FfmpegRawVideoSource : public cv::cudacodec::RawVideoSource {
+class FfmpegEncodedVideoSource : public cv::cudacodec::RawVideoSource {
 public:
-    explicit FfmpegRawVideoSource(const std::string& input_source);
+    explicit FfmpegEncodedVideoSource(const std::string& input_source);
 
     cv::cudacodec::FormatInfo format() const override;
     void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
@@ -41,10 +41,10 @@ public:
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
 
-    FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
-    FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;
-    FfmpegRawVideoSource(FfmpegRawVideoSource&&) = delete;
-    FfmpegRawVideoSource& operator=(FfmpegRawVideoSource&&) = delete;
+    FfmpegEncodedVideoSource(const FfmpegEncodedVideoSource&) = delete;
+    FfmpegEncodedVideoSource& operator=(const FfmpegEncodedVideoSource&) = delete;
+    FfmpegEncodedVideoSource(FfmpegEncodedVideoSource&&) = delete;
+    FfmpegEncodedVideoSource& operator=(FfmpegEncodedVideoSource&&) = delete;
 
 private:
     struct AvFormatContextDeleter {
