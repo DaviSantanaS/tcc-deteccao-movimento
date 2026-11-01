@@ -7,8 +7,8 @@
 #include <iostream>
 #include <stdexcept>
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
+int main(int argument_count, char** argument_values) {
+    if (argument_count != 2) {
         std::cerr << "Uso: opencv_nvdec_file_tests <arquivo-local-h264>\n";
         return 2;
     }
@@ -20,16 +20,16 @@ int main(int argc, char** argv) {
         }
         cv::cuda::setDevice(0);
 
-        cv::cudacodec::VideoReaderInitParams reader_params;
-        reader_params.rawMode = true;
-        reader_params.allowFrameDrop = false;
-        reader_params.udpSource = true;
+        cv::cudacodec::VideoReaderInitParams reader_parameters;
+        reader_parameters.rawMode = true;
+        reader_parameters.allowFrameDrop = false;
+        reader_parameters.udpSource = true;
 
         cv::cuda::Stream cuda_stream;
-        auto video_reader = cv::cudacodec::createVideoReader(argv[1], {}, reader_params);
+        auto video_reader = cv::cudacodec::createVideoReader(argument_values[1], {}, reader_parameters);
         cv::cuda::GpuMat decoded_frame_gpu;
         constexpr int expected_frame_count = 3;
-        bool inspected_encoded_packet = false;
+        bool encoded_packet_inspection_complete = false;
 
         for (int decoded_frame_index = 0; decoded_frame_index < expected_frame_count; ++decoded_frame_index) {
             if (!video_reader->nextFrame(decoded_frame_gpu, cuda_stream)) {
@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
             if (decoded_frame_gpu.empty()) {
                 throw std::runtime_error("O leitor padrao retornou uma imagem vazia na GPU.");
             }
-            if (inspected_encoded_packet) {
+            if (encoded_packet_inspection_complete) {
                 continue;
             }
 
@@ -79,10 +79,10 @@ int main(int argc, char** argv) {
             printEncodedBytesPrefix(
                 "opencv_extradata", codec_extra_data.data, codec_extra_data.total() * codec_extra_data.elemSize()
             );
-            inspected_encoded_packet = true;
+            encoded_packet_inspection_complete = true;
         }
 
-        if (!inspected_encoded_packet) {
+        if (!encoded_packet_inspection_complete) {
             throw std::runtime_error("Nenhum pacote raw foi observado durante a leitura dos tres frames.");
         }
 

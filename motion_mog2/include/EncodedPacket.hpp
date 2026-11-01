@@ -6,8 +6,7 @@
 #include <memory>
 
 struct EncodedPacket {
-    // Historico e evento compartilham o pacote sem modificar seus dados.
     std::shared_ptr<const AVPacket> packet;
-    std::chrono::steady_clock::time_point received_at;
-    bool has_key_frame = false;
+    std::chrono::steady_clock::time_point reception_time;
+    bool key_frame_present = false;
 };

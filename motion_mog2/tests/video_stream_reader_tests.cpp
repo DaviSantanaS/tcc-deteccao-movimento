@@ -10,8 +10,8 @@
 #include <utility>
 #include <vector>
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
+int main(int argument_count, char** argument_values) {
+    if (argument_count != 2) {
         std::cerr << "Uso: video_stream_reader_tests <arquivo-local-h264>\n";
         return 2;
     }
@@ -34,10 +34,10 @@ int main(int argc, char** argv) {
 
         {
             cv::cuda::Stream cuda_stream;
-            VideoStreamReader video_reader(argv[1]);
+            VideoStreamReader video_reader(argument_values[1]);
             const VideoStreamReader& const_video_reader = video_reader;
-            retained_video_stream_parameters = const_video_reader.videoStreamParameters();
-            const auto second_video_stream_parameters = const_video_reader.videoStreamParameters();
+            retained_video_stream_parameters = const_video_reader.getVideoStreamParameters();
+            const auto second_video_stream_parameters = const_video_reader.getVideoStreamParameters();
             if (!retained_video_stream_parameters || !retained_video_stream_parameters->codec_parameters ||
                 retained_video_stream_parameters.get() != second_video_stream_parameters.get()) {
                 throw std::runtime_error("O getter deve compartilhar uma unica configuracao valida.");
@@ -45,10 +45,10 @@ int main(int argc, char** argv) {
             video_stream_parameters_lifetime = retained_video_stream_parameters;
             codec_parameters_lifetime = retained_video_stream_parameters->codec_parameters;
 
-            if (!std::isfinite(video_reader.fps()) || video_reader.fps() <= 0.0) {
+            if (!std::isfinite(video_reader.getFramesPerSecond()) || video_reader.getFramesPerSecond() <= 0.0) {
                 throw std::runtime_error("A inicializacao deve fornecer um FPS finito e positivo.");
             }
-            std::cout << "reader FPS=" << video_reader.fps() << '\n';
+            std::cout << "reader FPS=" << video_reader.getFramesPerSecond() << '\n';
             DecodedFrame decoded_frame;
             std::vector<AvPacketPtr> encoded_packets;
 
@@ -58,17 +58,17 @@ int main(int argc, char** argv) {
                 }
                 cuda_stream.waitForCompletion();
 
-                if (!std::isfinite(video_reader.fps()) || video_reader.fps() <= 0.0) {
+                if (!std::isfinite(video_reader.getFramesPerSecond()) || video_reader.getFramesPerSecond() <= 0.0) {
                     throw std::runtime_error("O FPS deve permanecer finito e positivo durante as leituras.");
                 }
 
                 if (decoded_frame.decoded_frame_gpu.empty() ||
                     decoded_frame.decoded_frame_index != expected_frame_index ||
-                    video_reader.decodedFrameCount() != expected_frame_index + 1) {
+                    video_reader.getDecodedFrameCount() != expected_frame_index + 1) {
                     throw std::runtime_error("A leitura deve produzir imagem na GPU, indice e contador corretos.");
                 }
 
-                const auto stream_parameters = const_video_reader.videoStreamParameters();
+                const auto stream_parameters = const_video_reader.getVideoStreamParameters();
                 if (!stream_parameters || !stream_parameters->codec_parameters ||
                     stream_parameters->codec_parameters->codec_id != AV_CODEC_ID_H264 ||
                     stream_parameters->codec_parameters->width <= 0 ||

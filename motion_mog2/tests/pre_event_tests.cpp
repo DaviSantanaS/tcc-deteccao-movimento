@@ -19,48 +19,48 @@ void require(bool condition, const std::string& message) {
 }
 
 void requireFailure(const std::function<void()>& operation) {
-    bool failed = false;
+    bool exception_reported = false;
     try {
         operation();
     } catch (const std::exception&) {
-        failed = true;
+        exception_reported = true;
     }
-    require(failed, "A entrada invalida foi aceita.");
+    require(exception_reported, "A entrada invalida foi aceita.");
 }
 
-EncodedPacket makePacket(std::uint64_t index, bool key_frame) {
+EncodedPacket createEncodedPacket(std::uint64_t packet_index, bool key_frame_present) {
     AvPacketPtr av_packet = allocateAvPacket();
-    const int packet_size = static_cast<int>(index % 7 + 1);
-    if (av_new_packet(av_packet.get(), packet_size) < 0) {
+    const int packet_byte_count = static_cast<int>(packet_index % 7 + 1);
+    if (av_new_packet(av_packet.get(), packet_byte_count) < 0) {
         throw std::runtime_error("Nao foi possivel alocar o payload do teste.");
     }
-    std::memset(av_packet->data, static_cast<unsigned char>(index % 256), packet_size);
-    av_packet->pts = static_cast<std::int64_t>(index);
-    av_packet->dts = static_cast<std::int64_t>(index);
+    std::memset(av_packet->data, static_cast<unsigned char>(packet_index % 256), packet_byte_count);
+    av_packet->pts = static_cast<std::int64_t>(packet_index);
+    av_packet->dts = static_cast<std::int64_t>(packet_index);
     av_packet->duration = 1;
     av_packet->time_base = AVRational{1, 100};
-    av_packet->flags = key_frame ? AV_PKT_FLAG_KEY : 0;
+    av_packet->flags = key_frame_present ? AV_PKT_FLAG_KEY : 0;
 
     EncodedPacket packet;
     packet.packet = std::shared_ptr<const AVPacket>(std::move(av_packet));
-    packet.has_key_frame = key_frame;
-    packet.received_at = std::chrono::steady_clock::time_point{} +
-        std::chrono::milliseconds(index * 10);
+    packet.key_frame_present = key_frame_present;
+    packet.reception_time = std::chrono::steady_clock::time_point{} +
+        std::chrono::milliseconds(packet_index * 10);
     return packet;
 }
 
-void feed(EncodedVideoBuffer& buffer, std::uint64_t first, std::uint64_t last) {
-    for (std::uint64_t index = first; index <= last; ++index) {
-        buffer.updatePreEventBuffer({makePacket(index, index % 60 == 0)}, index);
+void appendPreEventPacketSequence(EncodedVideoBuffer& encoded_video_buffer, std::uint64_t first_packet_index, std::uint64_t last_packet_index) {
+    for (std::uint64_t packet_index = first_packet_index; packet_index <= last_packet_index; ++packet_index) {
+        encoded_video_buffer.updatePreEventBuffer({createEncodedPacket(packet_index, packet_index % 60 == 0)}, packet_index);
     }
 }
 
-std::size_t expectedBytes(std::uint64_t first, std::uint64_t last) {
-    std::size_t bytes = 0;
-    for (std::uint64_t index = first; index <= last; ++index) {
-        bytes += index % 7 + 1;
+std::size_t calculateExpectedByteCount(std::uint64_t first_packet_index, std::uint64_t last_packet_index) {
+    std::size_t encoded_byte_count = 0;
+    for (std::uint64_t packet_index = first_packet_index; packet_index <= last_packet_index; ++packet_index) {
+        encoded_byte_count += packet_index % 7 + 1;
     }
-    return bytes;
+    return encoded_byte_count;
 }
 
 void testSecondsConversion() {
@@ -72,12 +72,12 @@ void testSecondsConversion() {
     require(calculatePreEventFrameCount(0.001, 30) == 1, "Janela menor que um frame.");
     require(parsePreEventSeconds("2.5") == 2.5, "Leitura de segundos fracionarios.");
 
-    for (const std::string value : {"-1", "nan", "inf", "1s", "", "1,5", "1e400"}) {
-        requireFailure([&] { parsePreEventSeconds(value); });
+    for (const std::string pre_event_seconds_text : {"-1", "nan", "inf", "1s", "", "1,5", "1e400"}) {
+        requireFailure([&] { parsePreEventSeconds(pre_event_seconds_text); });
     }
-    for (double fps : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+    for (double invalid_frames_per_second : {0.0, -1.0, std::numeric_limits<double>::infinity(),
                        std::numeric_limits<double>::quiet_NaN()}) {
-        requireFailure([&] { calculatePreEventFrameCount(5, fps); });
+        requireFailure([&] { calculatePreEventFrameCount(5, invalid_frames_per_second); });
     }
     requireFailure([] { calculatePreEventFrameCount(-1, 30); });
     requireFailure([] { calculatePreEventFrameCount(std::ldexp(1.0, 64), 1); });
@@ -87,161 +87,161 @@ void testSecondsConversion() {
 }
 
 void testZeroPreEvent() {
-    EncodedVideoBuffer buffer;
-    feed(buffer, 0, 100);
-    const auto info = buffer.startMotion(100, {makePacket(100, false)});
-    require(info.start_decoded_frame_index == 60, "Zero deve usar o GOP corrente.");
-    require(info.gop_encoded_packet_count == 41, "GOP corrente incorreto.");
-    require(info.requested_pre_event_frame_count == 0, "Padrao deve ser zero.");
-    require(info.pre_event_history_sufficient, "GOP corrente com keyframe disponivel.");
+    EncodedVideoBuffer encoded_video_buffer;
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 100);
+    const auto motion_start_info = encoded_video_buffer.startMotion(100, {createEncodedPacket(100, false)});
+    require(motion_start_info.start_decoded_frame_index == 60, "Zero deve usar o GOP corrente.");
+    require(motion_start_info.gop_encoded_packet_count == 41, "GOP corrente incorreto.");
+    require(motion_start_info.requested_pre_event_frame_count == 0, "Padrao deve ser zero.");
+    require(motion_start_info.pre_event_history_sufficient, "GOP corrente com keyframe disponivel.");
 }
 
 void testMultipleGops() {
-    EncodedVideoBuffer buffer(150);
-    feed(buffer, 0, 500);
-    const auto info = buffer.startMotion(500, {makePacket(500, false)});
-    require(info.start_decoded_frame_index == 300, "Deve selecionar o keyframe 300.");
-    require(info.extra_decoded_frames_before_motion == 200, "Margem do GOP incorreta.");
-    require(info.gop_encoded_packet_count == 201, "MOTION_ON deve entrar uma unica vez.");
-    require(info.requested_pre_event_frame_count == 150, "Pedido deve ser preservado.");
-    require(info.pre_event_history_sufficient, "Historico suficiente nao reconhecido.");
-    const auto complete = buffer.finishMotion();
-    require(complete.encoded_byte_count == expectedBytes(300, 500), "Bytes do historico.");
-    require(complete.key_frame_count == 4, "Devem existir quatro keyframes.");
-    require(std::abs(complete.duration_seconds - 2.0) < 1e-9, "Extremos temporais do lote.");
+    EncodedVideoBuffer encoded_video_buffer(150);
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 500);
+    const auto motion_start_info = encoded_video_buffer.startMotion(500, {createEncodedPacket(500, false)});
+    require(motion_start_info.start_decoded_frame_index == 300, "Deve selecionar o keyframe 300.");
+    require(motion_start_info.extra_decoded_frames_before_motion == 200, "Margem do GOP incorreta.");
+    require(motion_start_info.gop_encoded_packet_count == 201, "MOTION_ON deve entrar uma unica vez.");
+    require(motion_start_info.requested_pre_event_frame_count == 150, "Pedido deve ser preservado.");
+    require(motion_start_info.pre_event_history_sufficient, "Historico suficiente nao reconhecido.");
+    const auto completed_motion_info = encoded_video_buffer.finishMotion();
+    require(completed_motion_info.encoded_byte_count == calculateExpectedByteCount(300, 500), "Bytes do historico.");
+    require(completed_motion_info.key_frame_count == 4, "Devem existir quatro keyframes.");
+    require(std::abs(completed_motion_info.duration_seconds - 2.0) < 1e-9, "Extremos temporais do lote.");
 }
 
 void testExactKeyframeBoundary() {
-    EncodedVideoBuffer buffer(120);
-    feed(buffer, 0, 480);
-    const auto info = buffer.startMotion(480, {makePacket(480, true)});
-    require(info.start_decoded_frame_index == 360, "Keyframe exatamente no limite.");
-    require(info.gop_encoded_packet_count == 121, "Limite inclusivo incorreto.");
+    EncodedVideoBuffer encoded_video_buffer(120);
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 480);
+    const auto motion_start_info = encoded_video_buffer.startMotion(480, {createEncodedPacket(480, true)});
+    require(motion_start_info.start_decoded_frame_index == 360, "Keyframe exatamente no limite.");
+    require(motion_start_info.gop_encoded_packet_count == 121, "Limite inclusivo incorreto.");
 }
 
 void testInsufficientHistory() {
-    EncodedVideoBuffer buffer(150);
-    feed(buffer, 0, 30);
-    const auto info = buffer.startMotion(30, {makePacket(30, false)});
-    require(info.start_decoded_frame_index == 0, "Usar o historico disponivel.");
-    require(info.gop_encoded_packet_count == 31, "Historico inicial incorreto.");
-    require(!info.pre_event_history_sufficient, "Nao pode prometer 150 frames.");
+    EncodedVideoBuffer encoded_video_buffer(150);
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 30);
+    const auto motion_start_info = encoded_video_buffer.startMotion(30, {createEncodedPacket(30, false)});
+    require(motion_start_info.start_decoded_frame_index == 0, "Usar o historico disponivel.");
+    require(motion_start_info.gop_encoded_packet_count == 31, "Historico inicial incorreto.");
+    require(!motion_start_info.pre_event_history_sufficient, "Nao pode prometer 150 frames.");
 
-    EncodedVideoBuffer large_buffer(std::numeric_limits<std::uint64_t>::max());
-    feed(large_buffer, 0, 10);
-    const auto large_info = large_buffer.startMotion(10, {makePacket(10, false)});
-    require(large_info.start_decoded_frame_index == 0, "Subtracao sem underflow.");
-    require(!large_info.pre_event_history_sufficient, "Historico grande indisponivel.");
+    EncodedVideoBuffer large_window_buffer(std::numeric_limits<std::uint64_t>::max());
+    appendPreEventPacketSequence(large_window_buffer, 0, 10);
+    const auto large_window_motion_info = large_window_buffer.startMotion(10, {createEncodedPacket(10, false)});
+    require(large_window_motion_info.start_decoded_frame_index == 0, "Subtracao sem underflow.");
+    require(!large_window_motion_info.pre_event_history_sufficient, "Historico grande indisponivel.");
 }
 
 void testMissingAndLateKeyframe() {
-    EncodedVideoBuffer buffer(150);
-    for (std::uint64_t index = 0; index < 60; ++index) {
-        buffer.updatePreEventBuffer({makePacket(index, false)}, index);
+    EncodedVideoBuffer encoded_video_buffer(150);
+    for (std::uint64_t packet_index = 0; packet_index < 60; ++packet_index) {
+        encoded_video_buffer.updatePreEventBuffer({createEncodedPacket(packet_index, false)}, packet_index);
     }
-    const auto missing = buffer.startMotion(59, {makePacket(59, false)});
-    require(!missing.starts_with_key_frame, "Nao inventar um keyframe.");
-    require(!missing.pre_event_history_sufficient, "Sem keyframe, historico insuficiente.");
-    require(missing.gop_encoded_packet_count == 1, "Preservar o fallback corrente.");
-    buffer.finishMotion();
+    const auto missing_keyframe_motion_info = encoded_video_buffer.startMotion(59, {createEncodedPacket(59, false)});
+    require(!missing_keyframe_motion_info.starts_with_key_frame, "Nao inventar um keyframe.");
+    require(!missing_keyframe_motion_info.pre_event_history_sufficient, "Sem keyframe, historico insuficiente.");
+    require(missing_keyframe_motion_info.gop_encoded_packet_count == 1, "Preservar o fallback corrente.");
+    encoded_video_buffer.finishMotion();
 
-    feed(buffer, 60, 70);
-    const auto late = buffer.startMotion(70, {makePacket(70, false)});
-    require(late.start_decoded_frame_index == 60, "Comecar no primeiro keyframe disponivel.");
-    require(late.gop_encoded_packet_count == 11, "Descartar prefixo sem keyframe.");
-    require(!late.pre_event_history_sufficient, "Primeiro keyframe chegou tarde.");
+    appendPreEventPacketSequence(encoded_video_buffer, 60, 70);
+    const auto late_keyframe_motion_info = encoded_video_buffer.startMotion(70, {createEncodedPacket(70, false)});
+    require(late_keyframe_motion_info.start_decoded_frame_index == 60, "Comecar no primeiro keyframe disponivel.");
+    require(late_keyframe_motion_info.gop_encoded_packet_count == 11, "Descartar prefixo sem keyframe.");
+    require(!late_keyframe_motion_info.pre_event_history_sufficient, "Primeiro keyframe chegou tarde.");
 }
 
 void testEmptyBatchAdvancesWindow() {
-    EncodedVideoBuffer buffer(70);
-    feed(buffer, 0, 120);
-    buffer.updatePreEventBuffer({}, 190);
-    const auto info = buffer.startMotion(190, {});
-    require(info.start_decoded_frame_index == 120, "Limpar historico com lote vazio.");
-    require(info.gop_encoded_packet_count == 1, "Nao criar pacotes para frames observados.");
-    require(info.extra_decoded_frames_before_motion == 70, "Usar indices de observacao.");
+    EncodedVideoBuffer encoded_video_buffer(70);
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 120);
+    encoded_video_buffer.updatePreEventBuffer({}, 190);
+    const auto motion_start_info = encoded_video_buffer.startMotion(190, {});
+    require(motion_start_info.start_decoded_frame_index == 120, "Limpar historico com lote vazio.");
+    require(motion_start_info.gop_encoded_packet_count == 1, "Nao criar pacotes para frames observados.");
+    require(motion_start_info.extra_decoded_frames_before_motion == 70, "Usar indices de observacao.");
 }
 
 void testSeveralKeyframesInOneBatch() {
-    EncodedVideoBuffer buffer(2);
-    buffer.updatePreEventBuffer({makePacket(0, true)}, 0);
-    buffer.updatePreEventBuffer({makePacket(1, false), makePacket(2, true),
-                                 makePacket(3, false), makePacket(4, true),
-                                 makePacket(5, false)}, 1);
-    buffer.updatePreEventBuffer({makePacket(6, false)}, 2);
-    auto info = buffer.startMotion(2, {makePacket(6, false)});
-    require(info.start_decoded_frame_index == 0, "Preservar GOP que cobre o inicio.");
-    require(info.gop_encoded_packet_count == 7, "Nao confundir pacotes com frames.");
-    require(buffer.finishMotion().encoded_byte_count == expectedBytes(0, 6), "Bytes de lotes.");
+    EncodedVideoBuffer encoded_video_buffer(2);
+    encoded_video_buffer.updatePreEventBuffer({createEncodedPacket(0, true)}, 0);
+    encoded_video_buffer.updatePreEventBuffer({createEncodedPacket(1, false), createEncodedPacket(2, true),
+                                 createEncodedPacket(3, false), createEncodedPacket(4, true),
+                                 createEncodedPacket(5, false)}, 1);
+    encoded_video_buffer.updatePreEventBuffer({createEncodedPacket(6, false)}, 2);
+    auto motion_start_info = encoded_video_buffer.startMotion(2, {createEncodedPacket(6, false)});
+    require(motion_start_info.start_decoded_frame_index == 0, "Preservar GOP que cobre o inicio.");
+    require(motion_start_info.gop_encoded_packet_count == 7, "Nao confundir pacotes com frames.");
+    require(encoded_video_buffer.finishMotion().encoded_byte_count == calculateExpectedByteCount(0, 6), "Bytes de lotes.");
 
-    buffer.updatePreEventBuffer({}, 3);
-    info = buffer.startMotion(3, {});
-    require(info.start_decoded_frame_index == 1, "Usar ultimo keyframe elegivel.");
-    require(info.gop_encoded_packet_count == 3, "Selecionar o ultimo GOP do mesmo ciclo.");
+    encoded_video_buffer.updatePreEventBuffer({}, 3);
+    motion_start_info = encoded_video_buffer.startMotion(3, {});
+    require(motion_start_info.start_decoded_frame_index == 1, "Usar ultimo keyframe elegivel.");
+    require(motion_start_info.gop_encoded_packet_count == 3, "Selecionar o ultimo GOP do mesmo ciclo.");
 }
 
 void testHistorySurvivesPreviousEvent() {
-    EncodedVideoBuffer buffer(100);
-    feed(buffer, 0, 200);
-    buffer.startMotion(200, {makePacket(200, false)});
-    for (std::uint64_t index = 201; index <= 230; ++index) {
-        const std::vector<EncodedPacket> packets{makePacket(index, false)};
-        buffer.updatePreEventBuffer(packets, index);
-        buffer.appendMotionPackets(packets);
+    EncodedVideoBuffer encoded_video_buffer(100);
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 200);
+    encoded_video_buffer.startMotion(200, {createEncodedPacket(200, false)});
+    for (std::uint64_t packet_index = 201; packet_index <= 230; ++packet_index) {
+        const std::vector<EncodedPacket> packets{createEncodedPacket(packet_index, false)};
+        encoded_video_buffer.updatePreEventBuffer(packets, packet_index);
+        encoded_video_buffer.appendMotionPackets(packets);
     }
-    const auto complete = buffer.finishMotion();
-    require(complete.encoded_packet_count == 171, "Evento deve conter 60..230 uma vez.");
-    require(complete.encoded_byte_count == expectedBytes(60, 230), "Bytes do evento ativo.");
-    require(buffer.currentMotionInfo().encoded_packet_count == 171, "Preservar o evento finalizado.");
-    require(buffer.currentMotionInfo().encoded_byte_count == expectedBytes(60, 230),
+    const auto completed_motion_info = encoded_video_buffer.finishMotion();
+    require(completed_motion_info.encoded_packet_count == 171, "Evento deve conter 60..230 uma vez.");
+    require(completed_motion_info.encoded_byte_count == calculateExpectedByteCount(60, 230), "Bytes do evento ativo.");
+    require(encoded_video_buffer.currentMotionInfo().encoded_packet_count == 171, "Preservar o evento finalizado.");
+    require(encoded_video_buffer.currentMotionInfo().encoded_byte_count == calculateExpectedByteCount(60, 230),
             "Preservar os bytes do evento finalizado.");
 
-    feed(buffer, 231, 231);
-    const auto next = buffer.startMotion(231, {makePacket(231, false)});
-    require(next.start_decoded_frame_index == 120, "Historico deve sobreviver ao evento.");
-    require(next.gop_encoded_packet_count == 112, "Historico do segundo evento incorreto.");
-    require(buffer.currentMotionInfo().encoded_packet_count == 112,
+    appendPreEventPacketSequence(encoded_video_buffer, 231, 231);
+    const auto next_motion_info = encoded_video_buffer.startMotion(231, {createEncodedPacket(231, false)});
+    require(next_motion_info.start_decoded_frame_index == 120, "Historico deve sobreviver ao evento.");
+    require(next_motion_info.gop_encoded_packet_count == 112, "Historico do segundo evento incorreto.");
+    require(encoded_video_buffer.currentMotionInfo().encoded_packet_count == 112,
             "Substituir o evento finalizado somente no proximo inicio.");
 }
 
 void testExpiredGopsAreDiscarded() {
-    EncodedVideoBuffer buffer(100);
-    feed(buffer, 0, 2000);
-    const auto info = buffer.startMotion(2000, {makePacket(2000, false)});
-    require(info.start_decoded_frame_index == 1860, "Selecionar GOP recente.");
-    require(info.gop_encoded_packet_count == 141, "Nao acumular GOPs expirados.");
+    EncodedVideoBuffer encoded_video_buffer(100);
+    appendPreEventPacketSequence(encoded_video_buffer, 0, 2000);
+    const auto motion_start_info = encoded_video_buffer.startMotion(2000, {createEncodedPacket(2000, false)});
+    require(motion_start_info.start_decoded_frame_index == 1860, "Selecionar GOP recente.");
+    require(motion_start_info.gop_encoded_packet_count == 141, "Nao acumular GOPs expirados.");
 }
 
 void testSharedPacketOwnership() {
-    EncodedPacket original = makePacket(42, true);
-    EncodedPacket preserved = original;
-    std::weak_ptr<const AVPacket> original_packet = original.packet;
-    original.packet.reset();
-    require(preserved.packet->data[0] == 42, "Payload deve sobreviver a liberacao da origem.");
-    require(preserved.packet->pts == 42 && preserved.packet->dts == 42 &&
-                preserved.packet->duration == 1,
+    EncodedPacket original_encoded_packet = createEncodedPacket(42, true);
+    EncodedPacket preserved_encoded_packet = original_encoded_packet;
+    std::weak_ptr<const AVPacket> original_packet = original_encoded_packet.packet;
+    original_encoded_packet.packet.reset();
+    require(preserved_encoded_packet.packet->data[0] == 42, "Payload deve sobreviver a liberacao da origem.");
+    require(preserved_encoded_packet.packet->pts == 42 && preserved_encoded_packet.packet->dts == 42 &&
+                preserved_encoded_packet.packet->duration == 1,
             "Preservar timestamps e duracao do AVPacket.");
-    require(preserved.packet->time_base.num == 1 && preserved.packet->time_base.den == 100,
+    require(preserved_encoded_packet.packet->time_base.num == 1 && preserved_encoded_packet.packet->time_base.den == 100,
             "Preservar a base de tempo.");
-    require((preserved.packet->flags & AV_PKT_FLAG_KEY) != 0, "Preservar a flag de keyframe.");
-    preserved.packet.reset();
+    require((preserved_encoded_packet.packet->flags & AV_PKT_FLAG_KEY) != 0, "Preservar a flag de keyframe.");
+    preserved_encoded_packet.packet.reset();
     require(original_packet.expired(), "Liberar o pacote depois da ultima referencia.");
 
-    EncodedVideoBuffer buffer;
-    EncodedPacket first_event_packet = makePacket(0, true);
+    EncodedVideoBuffer encoded_video_buffer;
+    EncodedPacket first_event_packet = createEncodedPacket(0, true);
     std::weak_ptr<const AVPacket> retained_packet = first_event_packet.packet;
-    buffer.startMotion(0, {first_event_packet});
+    encoded_video_buffer.startMotion(0, {first_event_packet});
     first_event_packet.packet.reset();
-    buffer.finishMotion();
+    encoded_video_buffer.finishMotion();
     require(!retained_packet.expired(), "MOTION_OFF nao deve liberar o ultimo evento.");
-    buffer.startMotion(1, {makePacket(1, true)});
+    encoded_video_buffer.startMotion(1, {createEncodedPacket(1, true)});
     require(retained_packet.expired(), "O proximo inicio deve liberar o evento anterior.");
 }
 
 void testInvalidPacketsAreRejected() {
-    EncodedVideoBuffer buffer;
-    requireFailure([&] { buffer.updatePreEventBuffer({EncodedPacket{}}, 0); });
-    requireFailure([&] { buffer.appendMotionPackets({EncodedPacket{}}); });
+    EncodedVideoBuffer encoded_video_buffer;
+    requireFailure([&] { encoded_video_buffer.updatePreEventBuffer({EncodedPacket{}}, 0); });
+    requireFailure([&] { encoded_video_buffer.appendMotionPackets({EncodedPacket{}}); });
 }
 
 int main() {

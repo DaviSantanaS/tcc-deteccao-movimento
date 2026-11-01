@@ -49,7 +49,7 @@ public:
     ScopedTemporaryDirectory(const ScopedTemporaryDirectory&) = delete;
     ScopedTemporaryDirectory& operator=(const ScopedTemporaryDirectory&) = delete;
 
-    const std::filesystem::path& path() const noexcept {
+    const std::filesystem::path& getDirectoryPath() const noexcept {
         return this->directory_path_;
     }
 
@@ -57,7 +57,7 @@ private:
     std::filesystem::path directory_path_;
 };
 
-std::size_t openFileDescriptorCount() {
+std::size_t countOpenFileDescriptors() {
     std::size_t descriptor_count = 0;
     for (const auto& descriptor_entry : std::filesystem::directory_iterator("/proc/self/fd")) {
         (void)descriptor_entry;
@@ -83,15 +83,15 @@ int main() {
         std::filesystem::path test_directory_path;
         {
             ScopedTemporaryDirectory test_directory;
-            test_directory_path = test_directory.path();
-            const std::size_t initial_descriptor_count = openFileDescriptorCount();
-            const std::filesystem::path absolute_file_path = test_directory.path() / "saída com espaços.bin";
+            test_directory_path = test_directory.getDirectoryPath();
+            const std::size_t initial_descriptor_count = countOpenFileDescriptors();
+            const std::filesystem::path absolute_file_path = test_directory.getDirectoryPath() / "saída com espaços.bin";
             const std::string expected_contents{"A\0B", 3};
 
             AvOutputIoContextPtr output_io_context = openOutputFile(absolute_file_path);
             if (!output_io_context || !output_io_context->write_flag ||
                 !std::filesystem::is_regular_file(absolute_file_path) ||
-                openFileDescriptorCount() != initial_descriptor_count + 1) {
+                countOpenFileDescriptors() != initial_descriptor_count + 1) {
                 throw std::runtime_error("A abertura deve criar um arquivo local para escrita e possuir seu descritor.");
             }
             AVIOContext* opened_output_io_context = output_io_context.get();
@@ -106,75 +106,75 @@ int main() {
                 throw std::runtime_error("A escrita dos bytes sinteticos falhou.");
             }
             moved_output_io_context.reset();
-            if (moved_output_io_context || openFileDescriptorCount() != initial_descriptor_count ||
+            if (moved_output_io_context || countOpenFileDescriptors() != initial_descriptor_count ||
                 readFileContents(absolute_file_path) != expected_contents) {
                 throw std::runtime_error("reset() deve fechar o descritor e descarregar os bytes no arquivo.");
             }
 
             const std::filesystem::path relative_file_path =
-                std::filesystem::relative(test_directory.path(), std::filesystem::current_path()) / "relative.bin";
+                std::filesystem::relative(test_directory.getDirectoryPath(), std::filesystem::current_path()) / "relative.bin";
             if (relative_file_path.is_absolute()) {
                 throw std::runtime_error("O segundo caminho de teste deve ser relativo.");
             }
             {
                 AvOutputIoContextPtr scoped_output_io_context = openOutputFile(relative_file_path);
                 if (!scoped_output_io_context ||
-                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("Um caminho relativo deve abrir o arquivo local correspondente.");
                 }
             }
-            if (openFileDescriptorCount() != initial_descriptor_count ||
-                !std::filesystem::is_regular_file(test_directory.path() / "relative.bin") ||
-                std::filesystem::file_size(test_directory.path() / "relative.bin") != 0) {
+            if (countOpenFileDescriptors() != initial_descriptor_count ||
+                !std::filesystem::is_regular_file(test_directory.getDirectoryPath() / "relative.bin") ||
+                std::filesystem::file_size(test_directory.getDirectoryPath() / "relative.bin") != 0) {
                 throw std::runtime_error("A destruicao por escopo deve fechar o arquivo aberto por caminho relativo.");
             }
             AvOutputIoContextPtr empty_output_io_context;
             empty_output_io_context.reset();
             AvOutputIoContextDeleter{}(nullptr);
 
-            const auto expect_invalid_path_rejection = [](const std::filesystem::path& file_path) {
-                const std::size_t previous_descriptor_count = openFileDescriptorCount();
+            const auto invalid_path_rejection_assertion = [](const std::filesystem::path& file_path) {
+                const std::size_t previous_descriptor_count = countOpenFileDescriptors();
                 bool rejected = false;
                 try {
                     (void)openOutputFile(file_path);
                 } catch (const std::invalid_argument&) {
                     rejected = true;
                 }
-                if (!rejected || openFileDescriptorCount() != previous_descriptor_count) {
+                if (!rejected || countOpenFileDescriptors() != previous_descriptor_count) {
                     throw std::runtime_error("Um caminho invalido deve ser rejeitado sem manter descritores abertos.");
                 }
             };
-            expect_invalid_path_rejection(absolute_file_path);
+            invalid_path_rejection_assertion(absolute_file_path);
             if (readFileContents(absolute_file_path) != expected_contents) {
                 throw std::runtime_error("Recusar um arquivo existente deve preservar seu conteudo.");
             }
-            expect_invalid_path_rejection(test_directory.path());
+            invalid_path_rejection_assertion(test_directory.getDirectoryPath());
 
-            const std::filesystem::path valid_link_path = test_directory.path() / "existing-target-link";
+            const std::filesystem::path valid_link_path = test_directory.getDirectoryPath() / "existing-target-link";
             std::filesystem::create_symlink(absolute_file_path, valid_link_path);
-            expect_invalid_path_rejection(valid_link_path);
+            invalid_path_rejection_assertion(valid_link_path);
             if (!std::filesystem::is_symlink(valid_link_path) ||
                 readFileContents(absolute_file_path) != expected_contents) {
                 throw std::runtime_error("Recusar um link deve preservar o link e os bytes de seu alvo.");
             }
-            const std::filesystem::path absent_link_target = test_directory.path() / "absent-target";
-            const std::filesystem::path broken_link_path = test_directory.path() / "absent-target-link";
+            const std::filesystem::path absent_link_target = test_directory.getDirectoryPath() / "absent-target";
+            const std::filesystem::path broken_link_path = test_directory.getDirectoryPath() / "absent-target-link";
             std::filesystem::create_symlink(absent_link_target, broken_link_path);
-            expect_invalid_path_rejection(broken_link_path);
+            invalid_path_rejection_assertion(broken_link_path);
             if (!std::filesystem::is_symlink(broken_link_path) || std::filesystem::exists(absent_link_target)) {
                 throw std::runtime_error("Recusar um link quebrado nao deve criar seu alvo.");
             }
 
-            expect_invalid_path_rejection(std::filesystem::path{});
-            std::string path_with_null_byte = (test_directory.path() / "invalid-name").string();
+            invalid_path_rejection_assertion(std::filesystem::path{});
+            std::string path_with_null_byte = (test_directory.getDirectoryPath() / "invalid-name").string();
             path_with_null_byte.push_back('\0');
             path_with_null_byte += "trailing-name";
-            expect_invalid_path_rejection(std::filesystem::path{path_with_null_byte});
-            if (std::filesystem::exists(test_directory.path() / "invalid-name")) {
+            invalid_path_rejection_assertion(std::filesystem::path{path_with_null_byte});
+            if (std::filesystem::exists(test_directory.getDirectoryPath() / "invalid-name")) {
                 throw std::runtime_error("Um byte nulo nao deve causar abertura do prefixo do caminho.");
             }
 
-            const std::filesystem::path missing_parent_path = test_directory.path() / "missing-parent";
+            const std::filesystem::path missing_parent_path = test_directory.getDirectoryPath() / "missing-parent";
             bool missing_parent_rejected = false;
             try {
                 (void)openOutputFile(missing_parent_path / "output.bin");
@@ -184,7 +184,7 @@ int main() {
                 missing_parent_rejected = std::string(error.what()).find("erro ") != std::string::npos;
             }
             if (!missing_parent_rejected || std::filesystem::exists(missing_parent_path) ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("Um pai inexistente deve causar erro FFmpeg sem criar diretorios nem manter descritores.");
             }
 
@@ -210,37 +210,37 @@ int main() {
             VideoStreamParameters header_video_stream_parameters{
                 *header_codec_parameters, AVRational{1, 90000}
             };
-            const auto create_video_output_context = [&] {
-                auto context = allocateMp4OutputContext();
-                (void)createMp4VideoStream(*context, header_video_stream_parameters);
-                return context;
+            const auto video_output_context_factory = [&] {
+                auto mp4_output_context = allocateMp4OutputContext();
+                (void)createMp4VideoStream(*mp4_output_context, header_video_stream_parameters);
+                return mp4_output_context;
             };
-            const auto expect_header_precondition_rejection = [](
-                AVFormatContext& context,
+            const auto header_precondition_rejection_assertion = [](
+                AVFormatContext& mp4_output_context,
                 const AvOutputIoContextPtr& io_context
             ) {
-                AVIOContext* previous_io_context = context.pb;
-                const auto previous_stream_count = context.nb_streams;
+                AVIOContext* previous_io_context = mp4_output_context.pb;
+                const auto previous_stream_count = mp4_output_context.nb_streams;
                 const auto previous_io_position = io_context ? avio_tell(io_context.get()) : 0;
                 bool rejected = false;
                 try {
-                    writeMp4Header(context, io_context);
+                    writeMp4Header(mp4_output_context, io_context);
                 } catch (const std::invalid_argument&) {
                     rejected = true;
                 }
-                if (!rejected || context.pb != previous_io_context ||
-                    context.nb_streams != previous_stream_count ||
+                if (!rejected || mp4_output_context.pb != previous_io_context ||
+                    mp4_output_context.nb_streams != previous_stream_count ||
                     (io_context && avio_tell(io_context.get()) != previous_io_position)) {
                     throw std::runtime_error("Uma precondicao invalida deve impedir associacao e escrita do cabecalho.");
                 }
             };
 
-            const auto header_file_path = test_directory.path() / "header-only.mp4";
+            const auto header_file_path = test_directory.getDirectoryPath() / "header-only.mp4";
             {
                 auto header_io_context = openOutputFile(header_file_path);
                 AVIOContext* owned_header_io_context = header_io_context.get();
                 {
-                    auto header_format_context = create_video_output_context();
+                    auto header_format_context = video_output_context_factory();
                     writeMp4Header(*header_format_context, header_io_context);
                     if (!header_io_context || header_io_context.get() != owned_header_io_context ||
                         header_format_context->pb != owned_header_io_context ||
@@ -249,68 +249,68 @@ int main() {
                         avio_tell(header_io_context.get()) <= 0) {
                         throw std::runtime_error("O cabecalho deve usar o I/O emprestado e preservar a base de tempo do muxer.");
                     }
-                    expect_header_precondition_rejection(*header_format_context, header_io_context);
+                    header_precondition_rejection_assertion(*header_format_context, header_io_context);
                 }
                 if (!header_io_context || header_io_context.get() != owned_header_io_context ||
                     header_io_context->error < 0 ||
-                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("Destruir o contexto MP4 nao deve fechar o I/O pertencente a outro proprietario.");
                 }
             }
             const std::string header_file_contents = readFileContents(header_file_path);
             if (header_file_contents.size() < 8 || header_file_contents.compare(4, 4, "ftyp") != 0 ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("A saida parcial deve iniciar com ftyp e fechar todos os descritores.");
             }
 
             {
-                auto validation_io_context = openOutputFile(test_directory.path() / "rejected-header.mp4");
+                auto validation_io_context = openOutputFile(test_directory.getDirectoryPath() / "rejected-header.mp4");
                 {
                     auto context_without_stream = allocateMp4OutputContext();
-                    expect_header_precondition_rejection(*context_without_stream, validation_io_context);
+                    header_precondition_rejection_assertion(*context_without_stream, validation_io_context);
                 }
-                auto validation_format_context = create_video_output_context();
+                auto validation_format_context = video_output_context_factory();
                 AvOutputIoContextPtr missing_io_context;
-                expect_header_precondition_rejection(*validation_format_context, missing_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, missing_io_context);
                 validation_format_context->iformat = av_find_input_format("h264");
                 if (!validation_format_context->iformat) {
                     throw std::runtime_error("Nao foi possivel preparar o formato de entrada para testar o cabecalho.");
                 }
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_format_context->iformat = nullptr;
 
                 AVStream& validation_stream = *validation_format_context->streams[0];
                 validation_stream.codecpar->codec_id = AV_CODEC_ID_HEVC;
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_stream.codecpar->codec_id = AV_CODEC_ID_H264;
                 validation_stream.codecpar->width = 0;
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_stream.codecpar->width = 1920;
                 validation_stream.time_base.num = 0;
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_stream.time_base.num = 1;
                 validation_stream.codecpar->extradata_size = -1;
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_stream.codecpar->extradata_size = sizeof(h264_codec_extra_data);
 
                 const int original_write_flag = validation_io_context->write_flag;
                 validation_io_context->write_flag = 0;
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_io_context->write_flag = original_write_flag;
                 const int original_seekability = validation_io_context->seekable;
                 validation_io_context->seekable = 0;
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_io_context->seekable = original_seekability;
                 validation_io_context->error = AVERROR(EIO);
-                expect_header_precondition_rejection(*validation_format_context, validation_io_context);
+                header_precondition_rejection_assertion(*validation_format_context, validation_io_context);
                 validation_io_context->error = 0;
 
                 AVFormatContext* allocated_non_mp4_context = nullptr;
-                const int non_mp4_allocation_result = avformat_alloc_output_context2(
+                const int non_mp4_allocation_status = avformat_alloc_output_context2(
                     &allocated_non_mp4_context, nullptr, "matroska", nullptr
                 );
                 AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
-                if (non_mp4_allocation_result < 0 || !non_mp4_context) {
+                if (non_mp4_allocation_status < 0 || !non_mp4_context) {
                     throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o cabecalho.");
                 }
                 AVStream* non_mp4_stream = avformat_new_stream(non_mp4_context.get(), nullptr);
@@ -321,17 +321,17 @@ int main() {
                     throw std::runtime_error("Nao foi possivel preparar os parametros da stream nao MP4.");
                 }
                 non_mp4_stream->time_base = header_video_stream_parameters.packet_timestamp_time_base;
-                expect_header_precondition_rejection(*non_mp4_context, validation_io_context);
+                header_precondition_rejection_assertion(*non_mp4_context, validation_io_context);
             }
-            if (openFileDescriptorCount() != initial_descriptor_count ||
-                std::filesystem::file_size(test_directory.path() / "rejected-header.mp4") != 0) {
+            if (countOpenFileDescriptors() != initial_descriptor_count ||
+                std::filesystem::file_size(test_directory.getDirectoryPath() / "rejected-header.mp4") != 0) {
                 throw std::runtime_error("Precondicoes invalidas nao devem escrever bytes nem deixar descritores abertos.");
             }
 
-            const auto failed_header_path = test_directory.path() / "failed-header.mp4";
+            const auto failed_header_path = test_directory.getDirectoryPath() / "failed-header.mp4";
             {
                 auto failed_header_io_context = openOutputFile(failed_header_path);
-                auto failed_header_format_context = create_video_output_context();
+                auto failed_header_format_context = video_output_context_factory();
                 failed_header_format_context->streams[0]->codecpar->codec_tag = MKTAG('b', 'a', 'd', '!');
                 bool muxer_failure_reported = false;
                 try {
@@ -345,12 +345,12 @@ int main() {
                 }
                 failed_header_format_context.reset();
                 if (!failed_header_io_context ||
-                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("O descarte do muxer com falha deve ocorrer antes de fechar seu I/O.");
                 }
             }
             if (!std::filesystem::is_regular_file(failed_header_path) ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("Uma falha deve preservar a saida parcial sem deixar recursos abertos.");
             }
 
@@ -358,7 +358,7 @@ int main() {
             const std::string expected_packet_contents{
                 reinterpret_cast<const char*>(synthetic_avcc_payload), sizeof(synthetic_avcc_payload)
             };
-            const auto create_prepared_packet = [&](const AVStream& output_stream) {
+            const auto prepared_packet_factory = [&](const AVStream& output_stream) {
                 auto packet = allocateAvPacket();
                 if (av_new_packet(packet.get(), static_cast<int>(sizeof(synthetic_avcc_payload))) < 0) {
                     throw std::runtime_error("Nao foi possivel alocar os bytes do pacote de teste.");
@@ -374,16 +374,16 @@ int main() {
                 );
                 return packet;
             };
-            const auto expect_packet_precondition_rejection = [](AVFormatContext& context, AVPacket& packet) {
+            const auto packet_precondition_rejection_assertion = [](AVFormatContext& mp4_output_context, AVPacket& packet) {
                 const AVPacket previous_packet = packet;
                 const std::string previous_bytes = packet.data && packet.size > 0
                     ? std::string(reinterpret_cast<const char*>(packet.data), packet.size)
                     : std::string{};
-                AVIOContext* previous_io_context = context.pb;
-                const auto previous_io_position = context.pb ? avio_tell(context.pb) : 0;
+                AVIOContext* previous_io_context = mp4_output_context.pb;
+                const auto previous_io_position = mp4_output_context.pb ? avio_tell(mp4_output_context.pb) : 0;
                 bool rejected = false;
                 try {
-                    writeMp4Packet(context, packet);
+                    writeMp4Packet(mp4_output_context, packet);
                 } catch (const std::invalid_argument&) {
                     rejected = true;
                 }
@@ -396,53 +396,53 @@ int main() {
                     packet.flags != previous_packet.flags ||
                     (!previous_bytes.empty() &&
                      previous_bytes != std::string(reinterpret_cast<const char*>(packet.data), packet.size)) ||
-                    context.pb != previous_io_context ||
-                    (context.pb && avio_tell(context.pb) != previous_io_position)) {
+                    mp4_output_context.pb != previous_io_context ||
+                    (mp4_output_context.pb && avio_tell(mp4_output_context.pb) != previous_io_position)) {
                     throw std::runtime_error("Uma precondicao invalida deve preservar o pacote e nao escrever na saida.");
                 }
             };
 
-            const auto single_packet_path = test_directory.path() / "single-packet-partial.mp4";
+            const auto single_packet_path = test_directory.getDirectoryPath() / "single-packet-partial.mp4";
             {
                 auto packet_io_context = openOutputFile(single_packet_path);
                 {
-                    auto packet_format_context = create_video_output_context();
+                    auto packet_format_context = video_output_context_factory();
                     writeMp4Header(*packet_format_context, packet_io_context);
                     AVStream& output_stream = *packet_format_context->streams[0];
-                    auto prepared_packet = create_prepared_packet(output_stream);
+                    auto prepared_packet = prepared_packet_factory(output_stream);
 
-                    auto context_without_header = create_video_output_context();
-                    expect_packet_precondition_rejection(*context_without_header, *prepared_packet);
+                    auto context_without_header = video_output_context_factory();
+                    packet_precondition_rejection_assertion(*context_without_header, *prepared_packet);
                     auto context_without_stream = allocateMp4OutputContext();
-                    expect_packet_precondition_rejection(*context_without_stream, *prepared_packet);
+                    packet_precondition_rejection_assertion(*context_without_stream, *prepared_packet);
 
                     AVFormatContext* allocated_non_mp4_context = nullptr;
-                    const int non_mp4_allocation_result = avformat_alloc_output_context2(
+                    const int non_mp4_allocation_status = avformat_alloc_output_context2(
                         &allocated_non_mp4_context, nullptr, "matroska", nullptr
                     );
                     AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
-                    if (non_mp4_allocation_result < 0 || !non_mp4_context) {
+                    if (non_mp4_allocation_status < 0 || !non_mp4_context) {
                         throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o pacote.");
                     }
-                    expect_packet_precondition_rejection(*non_mp4_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*non_mp4_context, *prepared_packet);
 
                     const int original_write_flag = packet_io_context->write_flag;
                     packet_io_context->write_flag = 0;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     packet_io_context->write_flag = original_write_flag;
                     packet_io_context->error = AVERROR(EIO);
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     packet_io_context->error = 0;
                     output_stream.codecpar->codec_id = AV_CODEC_ID_HEVC;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     output_stream.codecpar->codec_id = AV_CODEC_ID_H264;
                     const AVRational output_time_base = output_stream.time_base;
                     output_stream.time_base.num = 0;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     output_stream.time_base = output_time_base;
 
                     auto empty_packet = allocateAvPacket();
-                    expect_packet_precondition_rejection(*packet_format_context, *empty_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *empty_packet);
                     auto non_refcounted_packet = allocateAvPacket();
                     unsigned char non_refcounted_payload[sizeof(synthetic_avcc_payload)];
                     std::copy(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload),
@@ -455,18 +455,18 @@ int main() {
                         *non_refcounted_packet, header_video_stream_parameters.packet_timestamp_time_base,
                         output_time_base, output_stream.index
                     );
-                    expect_packet_precondition_rejection(*packet_format_context, *non_refcounted_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *non_refcounted_packet);
 
                     unsigned char* original_data = prepared_packet->data;
                     prepared_packet->data = nullptr;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     prepared_packet->data = original_data;
                     const int original_size = prepared_packet->size;
                     prepared_packet->size = 0;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     prepared_packet->size = original_size;
                     prepared_packet->stream_index = output_stream.index + 1;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     prepared_packet->stream_index = output_stream.index;
                     const AVRational invalid_packet_time_bases[]{
                         {0, 1}, {-1, 1}, {1, 0}, {1, -1},
@@ -474,20 +474,20 @@ int main() {
                     };
                     for (const AVRational invalid_packet_time_base : invalid_packet_time_bases) {
                         prepared_packet->time_base = invalid_packet_time_base;
-                        expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                        packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     }
                     prepared_packet->time_base = output_time_base;
                     const auto original_pts = prepared_packet->pts;
                     const auto original_dts = prepared_packet->dts;
                     const auto original_duration = prepared_packet->duration;
                     prepared_packet->pts = AV_NOPTS_VALUE;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     prepared_packet->pts = original_pts;
                     prepared_packet->dts = AV_NOPTS_VALUE;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     prepared_packet->dts = original_dts;
                     prepared_packet->duration = -1;
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     prepared_packet->duration = original_duration;
 
                     AVPacket* owned_packet = prepared_packet.get();
@@ -498,13 +498,13 @@ int main() {
                         prepared_packet->pts != AV_NOPTS_VALUE || prepared_packet->dts != AV_NOPTS_VALUE) {
                         throw std::runtime_error("A escrita deve consumir os dados e preservar o proprietario do AVPacket vazio.");
                     }
-                    expect_packet_precondition_rejection(*packet_format_context, *prepared_packet);
+                    packet_precondition_rejection_assertion(*packet_format_context, *prepared_packet);
                     avio_flush(packet_io_context.get());
                     if (packet_io_context->error < 0) {
                         throw std::runtime_error("O flush exclusivo do teste nao conseguiu escrever os bytes do pacote.");
                     }
                 }
-                if (!packet_io_context || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                if (!packet_io_context || countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("Liberar o contexto apos escrever o pacote nao deve fechar o I/O emprestado.");
                 }
             }
@@ -513,15 +513,15 @@ int main() {
             if (single_packet_contents.size() < 8 || single_packet_contents.compare(4, 4, "ftyp") != 0 ||
                 mdat_position == std::string::npos ||
                 single_packet_contents.find(expected_packet_contents, mdat_position + 4) == std::string::npos ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("A saida parcial deve conter os bytes do pacote no mdat sem descritores restantes.");
             }
 
             {
-                auto failed_packet_io_context = openOutputFile(test_directory.path() / "failed-packet-partial.mp4");
-                auto failed_packet_format_context = create_video_output_context();
+                auto failed_packet_io_context = openOutputFile(test_directory.getDirectoryPath() / "failed-packet-partial.mp4");
+                auto failed_packet_format_context = video_output_context_factory();
                 writeMp4Header(*failed_packet_format_context, failed_packet_io_context);
-                auto failed_packet = create_prepared_packet(*failed_packet_format_context->streams[0]);
+                auto failed_packet = prepared_packet_factory(*failed_packet_format_context->streams[0]);
                 AVPacket* owned_failed_packet = failed_packet.get();
                 failed_packet->pts = 0;
                 failed_packet->dts = 1;
@@ -538,85 +538,85 @@ int main() {
                     throw std::runtime_error("Um erro real do FFmpeg deve ser informado com dados consumidos e AVPacket ainda possuido.");
                 }
                 failed_packet_format_context.reset();
-                if (!failed_packet_io_context || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                if (!failed_packet_io_context || countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("O contexto com erro de pacote deve ser descartado antes de fechar o I/O.");
                 }
             }
-            if (openFileDescriptorCount() != initial_descriptor_count) {
+            if (countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("O teste de erro de pacote nao deve deixar descritores abertos.");
             }
 
-            const auto expect_trailer_precondition_rejection = [](AVFormatContext& context) {
-                AVIOContext* previous_io_context = context.pb;
-                void* previous_private_data = context.priv_data;
-                const auto previous_stream_count = context.nb_streams;
-                const auto previous_io_position = context.pb ? avio_tell(context.pb) : 0;
+            const auto trailer_precondition_rejection_assertion = [](AVFormatContext& mp4_output_context) {
+                AVIOContext* previous_io_context = mp4_output_context.pb;
+                void* previous_private_data = mp4_output_context.priv_data;
+                const auto previous_stream_count = mp4_output_context.nb_streams;
+                const auto previous_io_position = mp4_output_context.pb ? avio_tell(mp4_output_context.pb) : 0;
                 bool rejected = false;
                 try {
-                    writeMp4Trailer(context);
+                    writeMp4Trailer(mp4_output_context);
                 } catch (const std::invalid_argument&) {
                     rejected = true;
                 }
-                if (!rejected || context.pb != previous_io_context ||
-                    context.priv_data != previous_private_data || context.nb_streams != previous_stream_count ||
-                    (context.pb && avio_tell(context.pb) != previous_io_position)) {
+                if (!rejected || mp4_output_context.pb != previous_io_context ||
+                    mp4_output_context.priv_data != previous_private_data || mp4_output_context.nb_streams != previous_stream_count ||
+                    (mp4_output_context.pb && avio_tell(mp4_output_context.pb) != previous_io_position)) {
                     throw std::runtime_error("Uma precondicao invalida deve impedir o trailer sem alterar o contexto ou o I/O.");
                 }
             };
-            const auto finalized_file_path = test_directory.path() / "finalized-container.mp4";
+            const auto finalized_file_path = test_directory.getDirectoryPath() / "finalized-container.mp4";
             {
                 auto trailer_io_context = openOutputFile(finalized_file_path);
                 AVIOContext* owned_trailer_io_context = trailer_io_context.get();
                 {
-                    auto trailer_format_context = create_video_output_context();
-                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    auto trailer_format_context = video_output_context_factory();
+                    trailer_precondition_rejection_assertion(*trailer_format_context);
                     auto context_without_stream = allocateMp4OutputContext();
-                    expect_trailer_precondition_rejection(*context_without_stream);
+                    trailer_precondition_rejection_assertion(*context_without_stream);
 
                     AVFormatContext* allocated_non_mp4_context = nullptr;
-                    const int non_mp4_allocation_result = avformat_alloc_output_context2(
+                    const int non_mp4_allocation_status = avformat_alloc_output_context2(
                         &allocated_non_mp4_context, nullptr, "matroska", nullptr
                     );
                     AvOutputFormatContextPtr non_mp4_context{allocated_non_mp4_context};
-                    if (non_mp4_allocation_result < 0 || !non_mp4_context) {
+                    if (non_mp4_allocation_status < 0 || !non_mp4_context) {
                         throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para testar o trailer.");
                     }
-                    expect_trailer_precondition_rejection(*non_mp4_context);
+                    trailer_precondition_rejection_assertion(*non_mp4_context);
 
                     writeMp4Header(*trailer_format_context, trailer_io_context);
                     const int original_write_flag = trailer_io_context->write_flag;
                     trailer_io_context->write_flag = 0;
-                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_precondition_rejection_assertion(*trailer_format_context);
                     trailer_io_context->write_flag = original_write_flag;
                     const int original_seekability = trailer_io_context->seekable;
                     trailer_io_context->seekable = 0;
-                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_precondition_rejection_assertion(*trailer_format_context);
                     trailer_io_context->seekable = original_seekability;
                     trailer_io_context->error = AVERROR(EIO);
-                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_precondition_rejection_assertion(*trailer_format_context);
                     trailer_io_context->error = 0;
                     trailer_format_context->streams[0]->codecpar->codec_id = AV_CODEC_ID_HEVC;
-                    expect_trailer_precondition_rejection(*trailer_format_context);
+                    trailer_precondition_rejection_assertion(*trailer_format_context);
                     trailer_format_context->streams[0]->codecpar->codec_id = AV_CODEC_ID_H264;
 
-                    auto packet = create_prepared_packet(*trailer_format_context->streams[0]);
+                    auto packet = prepared_packet_factory(*trailer_format_context->streams[0]);
                     writeMp4Packet(*trailer_format_context, *packet);
                     writeMp4Trailer(*trailer_format_context);
                     if (trailer_format_context->pb || !trailer_io_context ||
                         trailer_io_context.get() != owned_trailer_io_context || trailer_io_context->error < 0 ||
-                        openFileDescriptorCount() != initial_descriptor_count + 1) {
+                        countOpenFileDescriptors() != initial_descriptor_count + 1) {
                         throw std::runtime_error("O trailer deve desassociar pb sem fechar ou transferir a posse do I/O.");
                     }
                     const auto finalized_io_position = avio_tell(trailer_io_context.get());
-                    expect_trailer_precondition_rejection(*trailer_format_context);
-                    auto packet_after_trailer = create_prepared_packet(*trailer_format_context->streams[0]);
-                    expect_packet_precondition_rejection(*trailer_format_context, *packet_after_trailer);
+                    trailer_precondition_rejection_assertion(*trailer_format_context);
+                    auto packet_after_trailer = prepared_packet_factory(*trailer_format_context->streams[0]);
+                    packet_precondition_rejection_assertion(*trailer_format_context, *packet_after_trailer);
                     if (avio_tell(trailer_io_context.get()) != finalized_io_position) {
                         throw std::runtime_error("Outro trailer ou pacote nao deve escrever apos a finalizacao.");
                     }
                 }
                 if (!trailer_io_context || trailer_io_context.get() != owned_trailer_io_context ||
-                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("O I/O finalizado deve continuar aberto ate seu proprietario ser liberado.");
                 }
             }
@@ -624,19 +624,19 @@ int main() {
             if (finalized_contents.size() < 8 || finalized_contents.compare(4, 4, "ftyp") != 0 ||
                 finalized_contents.find("mdat") == std::string::npos ||
                 finalized_contents.find("moov") == std::string::npos ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("O MP4 finalizado deve conter ftyp, mdat e moov sem descritores restantes.");
             }
             {
                 AVFormatContext* opened_input_context = nullptr;
-                const int open_input_result = avformat_open_input(
+                const int input_initialization_status = avformat_open_input(
                     &opened_input_context, finalized_file_path.c_str(), nullptr, nullptr
                 );
-                const auto close_input = [](AVFormatContext* input) { avformat_close_input(&input); };
-                const std::unique_ptr<AVFormatContext, decltype(close_input)> input_context{
-                    opened_input_context, close_input
+                const auto input_context_deleter = [](AVFormatContext* input_format_context) { avformat_close_input(&input_format_context); };
+                const std::unique_ptr<AVFormatContext, decltype(input_context_deleter)> input_context{
+                    opened_input_context, input_context_deleter
                 };
-                if (open_input_result < 0 || !input_context || input_context->nb_streams != 1 ||
+                if (input_initialization_status < 0 || !input_context || input_context->nb_streams != 1 ||
                     !input_context->streams || !input_context->streams[0] ||
                     !input_context->streams[0]->codecpar ||
                     input_context->streams[0]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
@@ -646,63 +646,62 @@ int main() {
                     input_context->streams[0]->nb_frames != 1) {
                     throw std::runtime_error("O MP4 deve reabrir com os metadados H.264 e uma amostra codificada.");
                 }
-                // O payload sintetico testa o conteiner, nao um frame decodificavel.
                 input_context->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
-                auto read_packet = allocateAvPacket();
-                const int packet_read_result = av_read_frame(input_context.get(), read_packet.get());
-                if (packet_read_result < 0 || !read_packet->data ||
-                    read_packet->size != static_cast<int>(sizeof(synthetic_avcc_payload)) ||
-                    !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload), read_packet->data)) {
+                auto demuxed_packet = allocateAvPacket();
+                const int packet_retrieval_status = av_read_frame(input_context.get(), demuxed_packet.get());
+                if (packet_retrieval_status < 0 || !demuxed_packet->data ||
+                    demuxed_packet->size != static_cast<int>(sizeof(synthetic_avcc_payload)) ||
+                    !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload), demuxed_packet->data)) {
                     throw std::runtime_error("O demux do MP4 deve devolver os mesmos bytes sinteticos sem decodificacao.");
                 }
-                av_packet_unref(read_packet.get());
-                if (av_read_frame(input_context.get(), read_packet.get()) != AVERROR_EOF) {
+                av_packet_unref(demuxed_packet.get());
+                if (av_read_frame(input_context.get(), demuxed_packet.get()) != AVERROR_EOF) {
                     throw std::runtime_error("O MP4 de teste deve conter somente uma amostra codificada.");
                 }
             }
-            if (openFileDescriptorCount() != initial_descriptor_count) {
+            if (countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("Reabrir o MP4 finalizado nao deve deixar descritores abertos.");
             }
 
             {
-                auto failed_trailer_io_context = openOutputFile(test_directory.path() / "failed-trailer.mp4");
-                auto failed_trailer_format_context = create_video_output_context();
+                auto failed_trailer_io_context = openOutputFile(test_directory.getDirectoryPath() / "failed-trailer.mp4");
+                auto failed_trailer_format_context = video_output_context_factory();
                 writeMp4Header(*failed_trailer_format_context, failed_trailer_io_context);
-                auto packet = create_prepared_packet(*failed_trailer_format_context->streams[0]);
+                auto packet = prepared_packet_factory(*failed_trailer_format_context->streams[0]);
                 writeMp4Packet(*failed_trailer_format_context, *packet);
                 avio_flush(failed_trailer_io_context.get());
                 if (failed_trailer_io_context->error < 0) {
                     throw std::runtime_error("O I/O deve estar sem erro antes da falha injetada de trailer.");
                 }
-                const auto original_write_packet = failed_trailer_io_context->write_packet;
+                const auto original_packet_writer = failed_trailer_io_context->write_packet;
                 failed_trailer_io_context->write_packet = [](void*, std::uint8_t*, int) { return AVERROR(EIO); };
                 bool trailer_failure_reported = false;
                 try {
                     writeMp4Trailer(*failed_trailer_format_context);
                 } catch (const std::runtime_error& error) {
-                    failed_trailer_io_context->write_packet = original_write_packet;
+                    failed_trailer_io_context->write_packet = original_packet_writer;
                     trailer_failure_reported = std::string(error.what()).find("erro -") != std::string::npos;
                 } catch (...) {
-                    failed_trailer_io_context->write_packet = original_write_packet;
+                    failed_trailer_io_context->write_packet = original_packet_writer;
                     throw;
                 }
-                failed_trailer_io_context->write_packet = original_write_packet;
+                failed_trailer_io_context->write_packet = original_packet_writer;
                 if (!trailer_failure_reported || failed_trailer_format_context->pb ||
                     failed_trailer_io_context->error != AVERROR(EIO) ||
-                    openFileDescriptorCount() != initial_descriptor_count + 1) {
+                    countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("A falha injetada deve ser informada com pb desassociado e I/O ainda aberto.");
                 }
-                expect_trailer_precondition_rejection(*failed_trailer_format_context);
+                trailer_precondition_rejection_assertion(*failed_trailer_format_context);
                 failed_trailer_format_context.reset();
-                if (!failed_trailer_io_context || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                if (!failed_trailer_io_context || countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("O contexto com falha de trailer deve ser descartado antes de fechar o I/O.");
                 }
             }
-            if (openFileDescriptorCount() != initial_descriptor_count) {
+            if (countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("A falha injetada de trailer nao deve deixar descritores abertos.");
             }
 
-            const auto create_source_packet = [&](int packet_index) {
+            const auto source_packet_factory = [&](int packet_index) {
                 auto packet = allocateAvPacket();
                 if (av_new_packet(packet.get(), static_cast<int>(sizeof(synthetic_avcc_payload))) < 0) {
                     throw std::runtime_error("Nao foi possivel alocar o pacote original da colecao de teste.");
@@ -718,35 +717,35 @@ int main() {
                 packet->flags = AV_PKT_FLAG_KEY;
                 return packet;
             };
-            const auto create_source_batches = [&](const std::shared_ptr<const VideoStreamParameters>& parameters) {
+            const auto source_batch_factory = [&](const std::shared_ptr<const VideoStreamParameters>& source_video_stream_parameters) {
                 std::vector<EncodedVideoPackets> encoded_packet_batches(3);
-                encoded_packet_batches[0].video_stream_parameters = parameters;
-                encoded_packet_batches[2].video_stream_parameters = parameters;
-                encoded_packet_batches[0].encoded_packets.push_back(create_source_packet(0));
-                encoded_packet_batches[0].encoded_packets.push_back(create_source_packet(1));
-                encoded_packet_batches[2].encoded_packets.push_back(create_source_packet(2));
-                encoded_packet_batches[2].encoded_packets.push_back(create_source_packet(3));
+                encoded_packet_batches[0].video_stream_parameters = source_video_stream_parameters;
+                encoded_packet_batches[2].video_stream_parameters = source_video_stream_parameters;
+                encoded_packet_batches[0].encoded_packets.push_back(source_packet_factory(0));
+                encoded_packet_batches[0].encoded_packets.push_back(source_packet_factory(1));
+                encoded_packet_batches[2].encoded_packets.push_back(source_packet_factory(2));
+                encoded_packet_batches[2].encoded_packets.push_back(source_packet_factory(3));
                 return encoded_packet_batches;
             };
-            const auto expect_batch_rejection = [](
-                AVFormatContext& context, std::vector<EncodedVideoPackets> encoded_packet_batches
+            const auto batch_rejection_assertion = [](
+                AVFormatContext& mp4_output_context, std::vector<EncodedVideoPackets> encoded_packet_batches
             ) {
-                AVIOContext* previous_io_context = context.pb;
-                void* previous_private_data = context.priv_data;
-                const auto previous_io_position = context.pb ? avio_tell(context.pb) : 0;
+                AVIOContext* previous_io_context = mp4_output_context.pb;
+                void* previous_private_data = mp4_output_context.priv_data;
+                const auto previous_io_position = mp4_output_context.pb ? avio_tell(mp4_output_context.pb) : 0;
                 bool rejected = false;
                 try {
-                    writeMp4Packets(context, std::move(encoded_packet_batches));
+                    writeMp4Packets(mp4_output_context, std::move(encoded_packet_batches));
                 } catch (const std::invalid_argument&) {
                     rejected = true;
                 }
-                if (!rejected || context.pb != previous_io_context || context.priv_data != previous_private_data ||
-                    (context.pb && avio_tell(context.pb) != previous_io_position)) {
+                if (!rejected || mp4_output_context.pb != previous_io_context || mp4_output_context.priv_data != previous_private_data ||
+                    (mp4_output_context.pb && avio_tell(mp4_output_context.pb) != previous_io_position)) {
                     throw std::runtime_error("Uma colecao invalida deve ser rejeitada inteira antes de escrever pacotes.");
                 }
             };
 
-            const auto batch_file_path = test_directory.path() / "packet-collections.mp4";
+            const auto batch_file_path = test_directory.getDirectoryPath() / "packet-collections.mp4";
             AVRational batch_output_time_base{};
             auto batch_source_parameters = std::make_shared<const VideoStreamParameters>(
                 *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
@@ -754,7 +753,7 @@ int main() {
             const std::weak_ptr<const VideoStreamParameters> transferred_parameters = batch_source_parameters;
             std::vector<AvPacketPtr> source_packets;
             for (int packet_index = 0; packet_index < 4; ++packet_index) {
-                source_packets.push_back(create_source_packet(packet_index));
+                source_packets.push_back(source_packet_factory(packet_index));
             }
             auto retained_packet = cloneAvPacket(*source_packets.front());
             {
@@ -789,32 +788,31 @@ int main() {
                     throw std::runtime_error("A colecao deve liberar seus parametros sem alterar bytes compartilhados ou metadados do clone de teste.");
                 }
                 writeMp4Trailer(*batch_format_context);
-                expect_batch_rejection(*batch_format_context, {});
+                batch_rejection_assertion(*batch_format_context, {});
             }
-            if (openFileDescriptorCount() != initial_descriptor_count ||
+            if (countOpenFileDescriptors() != initial_descriptor_count ||
                 av_buffer_get_ref_count(retained_packet->buf) != 1) {
                 throw std::runtime_error("A escrita da colecao nao deve manter descritores nem referencias extras ao payload.");
             }
             retained_packet.reset();
             {
                 AVFormatContext* opened_batch_input = nullptr;
-                const int open_batch_result = avformat_open_input(
+                const int batch_input_initialization_status = avformat_open_input(
                     &opened_batch_input, batch_file_path.c_str(), nullptr, nullptr
                 );
-                const auto close_input = [](AVFormatContext* input) { avformat_close_input(&input); };
-                const std::unique_ptr<AVFormatContext, decltype(close_input)> batch_input{
-                    opened_batch_input, close_input
+                const auto input_context_deleter = [](AVFormatContext* input_format_context) { avformat_close_input(&input_format_context); };
+                const std::unique_ptr<AVFormatContext, decltype(input_context_deleter)> batch_input{
+                    opened_batch_input, input_context_deleter
                 };
-                if (open_batch_result < 0 || !batch_input || batch_input->nb_streams != 1 ||
+                if (batch_input_initialization_status < 0 || !batch_input || batch_input->nb_streams != 1 ||
                     batch_input->streams[0]->nb_frames != 4 ||
                     av_cmp_q(batch_input->streams[0]->time_base, batch_output_time_base) != 0) {
                     throw std::runtime_error("O MP4 da colecao deve reabrir com quatro amostras na base de tempo da saida.");
                 }
-                // Os quatro payloads sinteticos verificam demux e ordenacao, nao decodificacao.
                 batch_input->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
-                auto read_packet = allocateAvPacket();
+                auto demuxed_packet = allocateAvPacket();
                 for (int packet_index = 0; packet_index < 4; ++packet_index) {
-                    const int packet_read_result = av_read_frame(batch_input.get(), read_packet.get());
+                    const int packet_retrieval_status = av_read_frame(batch_input.get(), demuxed_packet.get());
                     const auto expected_timestamp = av_rescale_q(
                         packet_index * 3000, header_video_stream_parameters.packet_timestamp_time_base,
                         batch_output_time_base
@@ -822,21 +820,21 @@ int main() {
                     const auto expected_duration = av_rescale_q(
                         3000, header_video_stream_parameters.packet_timestamp_time_base, batch_output_time_base
                     );
-                    if (packet_read_result < 0 || !read_packet->data ||
-                        read_packet->size != static_cast<int>(sizeof(synthetic_avcc_payload)) ||
-                        !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload) - 1, read_packet->data) ||
-                        read_packet->data[5] != static_cast<unsigned char>(0x88 + packet_index) ||
-                        read_packet->stream_index != 0 || read_packet->pts != expected_timestamp ||
-                        read_packet->dts != expected_timestamp || read_packet->duration != expected_duration) {
+                    if (packet_retrieval_status < 0 || !demuxed_packet->data ||
+                        demuxed_packet->size != static_cast<int>(sizeof(synthetic_avcc_payload)) ||
+                        !std::equal(std::begin(synthetic_avcc_payload), std::end(synthetic_avcc_payload) - 1, demuxed_packet->data) ||
+                        demuxed_packet->data[5] != static_cast<unsigned char>(0x88 + packet_index) ||
+                        demuxed_packet->stream_index != 0 || demuxed_packet->pts != expected_timestamp ||
+                        demuxed_packet->dts != expected_timestamp || demuxed_packet->duration != expected_duration) {
                         throw std::runtime_error("Os quatro pacotes devem manter bytes e ordem, com timestamps e duracao convertidos.");
                     }
-                    av_packet_unref(read_packet.get());
+                    av_packet_unref(demuxed_packet.get());
                 }
-                if (av_read_frame(batch_input.get(), read_packet.get()) != AVERROR_EOF) {
+                if (av_read_frame(batch_input.get(), demuxed_packet.get()) != AVERROR_EOF) {
                     throw std::runtime_error("A colecao deve gravar exatamente os quatro pacotes fornecidos.");
                 }
             }
-            if (openFileDescriptorCount() != initial_descriptor_count) {
+            if (countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("O demux da colecao nao deve deixar descritores abertos.");
             }
 
@@ -844,12 +842,12 @@ int main() {
                 *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
             );
             {
-                auto rejected_batch_io = openOutputFile(test_directory.path() / "rejected-collections.mp4");
-                auto rejected_batch_context = create_video_output_context();
-                expect_batch_rejection(*rejected_batch_context, {});
+                auto rejected_batch_io = openOutputFile(test_directory.getDirectoryPath() / "rejected-collections.mp4");
+                auto rejected_batch_context = video_output_context_factory();
+                batch_rejection_assertion(*rejected_batch_context, {});
                 writeMp4Header(*rejected_batch_context, rejected_batch_io);
                 std::vector<AvPacketPtr> packets_without_parameters;
-                packets_without_parameters.push_back(create_source_packet(0));
+                packets_without_parameters.push_back(source_packet_factory(0));
                 const auto io_position_before_missing_parameters = avio_tell(rejected_batch_io.get());
                 bool missing_parameters_rejected = false;
                 try {
@@ -861,39 +859,39 @@ int main() {
                     avio_tell(rejected_batch_io.get()) != io_position_before_missing_parameters) {
                     throw std::runtime_error("Pacotes com parametros separados ausentes devem ser rejeitados antes de escrever.");
                 }
-                auto missing_parameters = create_source_batches(validation_source_parameters);
+                auto missing_parameters = source_batch_factory(validation_source_parameters);
                 missing_parameters[2].video_stream_parameters.reset();
-                expect_batch_rejection(*rejected_batch_context, std::move(missing_parameters));
-                auto different_parameters = create_source_batches(validation_source_parameters);
+                batch_rejection_assertion(*rejected_batch_context, std::move(missing_parameters));
+                auto different_parameters = source_batch_factory(validation_source_parameters);
                 different_parameters[2].video_stream_parameters = std::make_shared<const VideoStreamParameters>(
                     *header_codec_parameters, header_video_stream_parameters.packet_timestamp_time_base
                 );
-                expect_batch_rejection(*rejected_batch_context, std::move(different_parameters));
-                auto null_packet = create_source_batches(validation_source_parameters);
+                batch_rejection_assertion(*rejected_batch_context, std::move(different_parameters));
+                auto null_packet = source_batch_factory(validation_source_parameters);
                 null_packet[2].encoded_packets.back().reset();
-                expect_batch_rejection(*rejected_batch_context, std::move(null_packet));
-                auto incompatible_time_base = create_source_batches(validation_source_parameters);
+                batch_rejection_assertion(*rejected_batch_context, std::move(null_packet));
+                auto incompatible_time_base = source_batch_factory(validation_source_parameters);
                 incompatible_time_base[2].encoded_packets.back()->time_base = {1, 1000};
-                expect_batch_rejection(*rejected_batch_context, std::move(incompatible_time_base));
-                auto unknown_timestamp = create_source_batches(validation_source_parameters);
+                batch_rejection_assertion(*rejected_batch_context, std::move(incompatible_time_base));
+                auto unknown_timestamp = source_batch_factory(validation_source_parameters);
                 unknown_timestamp[2].encoded_packets.back()->pts = AV_NOPTS_VALUE;
-                expect_batch_rejection(*rejected_batch_context, std::move(unknown_timestamp));
-                auto missing_payload = create_source_batches(validation_source_parameters);
+                batch_rejection_assertion(*rejected_batch_context, std::move(unknown_timestamp));
+                auto missing_payload = source_batch_factory(validation_source_parameters);
                 av_packet_unref(missing_payload[2].encoded_packets.back().get());
-                expect_batch_rejection(*rejected_batch_context, std::move(missing_payload));
+                batch_rejection_assertion(*rejected_batch_context, std::move(missing_payload));
             }
-            const std::string rejected_batch_contents = readFileContents(test_directory.path() / "rejected-collections.mp4");
+            const std::string rejected_batch_contents = readFileContents(test_directory.getDirectoryPath() / "rejected-collections.mp4");
             if (rejected_batch_contents.find(expected_packet_contents) != std::string::npos ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("Um erro no ultimo grupo nao deve permitir escrever os pacotes anteriores.");
             }
 
-            const auto failed_batch_path = test_directory.path() / "failed-collection-partial.mp4";
+            const auto failed_batch_path = test_directory.getDirectoryPath() / "failed-collection-partial.mp4";
             {
                 auto failed_batch_io = openOutputFile(failed_batch_path);
-                auto failed_batch_context = create_video_output_context();
+                auto failed_batch_context = video_output_context_factory();
                 writeMp4Header(*failed_batch_context, failed_batch_io);
-                auto failed_batches = create_source_batches(validation_source_parameters);
+                auto failed_batches = source_batch_factory(validation_source_parameters);
                 failed_batches[0].encoded_packets[1]->pts = 0;
                 auto retained_unwritten_packet = cloneAvPacket(*failed_batches[2].encoded_packets[0]);
                 bool batch_failure_reported = false;
@@ -906,7 +904,7 @@ int main() {
                     throw std::runtime_error("O erro no segundo pacote deve interromper a colecao e liberar pacotes nao escritos.");
                 }
                 failed_batch_context.reset();
-                if (!failed_batch_io || openFileDescriptorCount() != initial_descriptor_count + 1) {
+                if (!failed_batch_io || countOpenFileDescriptors() != initial_descriptor_count + 1) {
                     throw std::runtime_error("O contexto da colecao com erro deve ser descartado antes de fechar o I/O.");
                 }
             }
@@ -921,7 +919,7 @@ int main() {
                 failed_batch_contents.find(second_packet_contents) != std::string::npos ||
                 failed_batch_contents.find(third_packet_contents) != std::string::npos ||
                 failed_batch_contents.find(fourth_packet_contents) != std::string::npos ||
-                openFileDescriptorCount() != initial_descriptor_count) {
+                countOpenFileDescriptors() != initial_descriptor_count) {
                 throw std::runtime_error("A saida parcial deve conter somente o primeiro pacote, sem escritas apos a falha.");
             }
         }

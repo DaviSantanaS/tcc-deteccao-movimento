@@ -25,15 +25,15 @@ AvCodecParametersPtr cloneAvCodecParameters(
 ) {
     AvCodecParametersPtr cloned_codec_parameters = allocateAvCodecParameters();
 
-    const int codec_parameters_copy_result = avcodec_parameters_copy(
+    const int codec_parameters_copy_status = avcodec_parameters_copy(
         cloned_codec_parameters.get(),
         &source_codec_parameters
     );
 
-    if (codec_parameters_copy_result < 0) {
+    if (codec_parameters_copy_status < 0) {
         throw std::runtime_error(
             "Nao foi possivel copiar os parametros de codec: erro " +
-            std::to_string(codec_parameters_copy_result)
+            std::to_string(codec_parameters_copy_status)
         );
     }
 

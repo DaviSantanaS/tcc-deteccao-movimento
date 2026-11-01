@@ -11,8 +11,8 @@
 #include <utility>
 #include <vector>
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
+int main(int argument_count, char** argument_values) {
+    if (argument_count != 2) {
         std::cerr << "Uso: ffmpeg_encoded_video_packets_tests <arquivo-local-h264>\n";
         return 2;
     }
@@ -29,8 +29,8 @@ int main(int argc, char** argv) {
         std::vector<unsigned char> retained_filtered_packet_contents;
 
         {
-            FfmpegRawVideoSource video_source(argv[1]);
-            const auto expected_video_stream_parameters = video_source.videoStreamParameters();
+            FfmpegRawVideoSource video_source(argument_values[1]);
+            const auto expected_video_stream_parameters = video_source.getVideoStreamParameters();
             video_stream_parameters_lifetime = expected_video_stream_parameters;
             codec_parameters_lifetime = expected_video_stream_parameters->codec_parameters;
 
@@ -129,12 +129,12 @@ int main(int argc, char** argv) {
             }
 
             AVFormatContext* reference_input = nullptr;
-            const int reference_open_status = avformat_open_input(&reference_input, argv[1], nullptr, nullptr);
-            const auto close_reference_input = [](AVFormatContext* input) { avformat_close_input(&input); };
-            const std::unique_ptr<AVFormatContext, decltype(close_reference_input)> reference_context(
-                reference_input, close_reference_input
+            const int reference_input_initialization_status = avformat_open_input(&reference_input, argument_values[1], nullptr, nullptr);
+            const auto reference_input_deleter = [](AVFormatContext* input_format_context) { avformat_close_input(&input_format_context); };
+            const std::unique_ptr<AVFormatContext, decltype(reference_input_deleter)> reference_context(
+                reference_input, reference_input_deleter
             );
-            if (reference_open_status < 0 || avformat_find_stream_info(reference_context.get(), nullptr) < 0) {
+            if (reference_input_initialization_status < 0 || avformat_find_stream_info(reference_context.get(), nullptr) < 0) {
                 throw std::runtime_error("Nao foi possivel abrir a entrada independente de referencia.");
             }
             const int reference_video_stream_index = av_find_best_stream(
@@ -149,8 +149,8 @@ int main(int argc, char** argv) {
             );
             std::array<AvPacketPtr, 3> reference_packets;
             unsigned char* invalid_call_data = nullptr;
-            std::size_t invalid_call_size = 0;
-            if (video_source.getNextPacket(nullptr, &invalid_call_size) ||
+            std::size_t invalid_call_packet_byte_count = 0;
+            if (video_source.getNextPacket(nullptr, &invalid_call_packet_byte_count) ||
                 video_source.getNextPacket(&invalid_call_data, nullptr)) {
                 throw std::runtime_error("Argumentos nulos devem ser rejeitados sem consumir pacotes.");
             }
@@ -180,22 +180,22 @@ int main(int argc, char** argv) {
                     throw std::runtime_error("O filtro de referencia deve produzir uma saida valida por entrada.");
                 }
                 unsigned char* packet_data = nullptr;
-                std::size_t packet_size = 0;
-                if (!video_source.getNextPacket(&packet_data, &packet_size) ||
-                    packet_data == nullptr || packet_size == 0) {
+                std::size_t encoded_packet_byte_count = 0;
+                if (!video_source.getNextPacket(&packet_data, &encoded_packet_byte_count) ||
+                    packet_data == nullptr || encoded_packet_byte_count == 0) {
                     throw std::runtime_error("Nao foi possivel obter os tres pacotes locais de teste.");
                 }
                 const auto& expected_decoder_packet = expected_decoder_packets.front();
-                const bool has_annex_b_start_code = packet_size >= 3 && packet_data[0] == 0 &&
-                    packet_data[1] == 0 && (packet_data[2] == 1 || (packet_size >= 4 &&
+                const bool annex_b_start_code_present = encoded_packet_byte_count >= 3 && packet_data[0] == 0 &&
+                    packet_data[1] == 0 && (packet_data[2] == 1 || (encoded_packet_byte_count >= 4 &&
                         packet_data[2] == 0 && packet_data[3] == 1));
-                if (!has_annex_b_start_code || packet_size != static_cast<std::size_t>(expected_decoder_packet->size) ||
-                    std::memcmp(packet_data, expected_decoder_packet->data, packet_size) != 0 ||
+                if (!annex_b_start_code_present || encoded_packet_byte_count != static_cast<std::size_t>(expected_decoder_packet->size) ||
+                    std::memcmp(packet_data, expected_decoder_packet->data, encoded_packet_byte_count) != 0 ||
                     video_source.lastPacketContainsKeyFrame() != ((reference_packet->flags & AV_PKT_FLAG_KEY) != 0)) {
                     throw std::runtime_error("O decoder deve receber a saida Annex B correta, com indicacao de keyframe preservada.");
                 }
                 if (packet_index == 0) {
-                    printEncodedBytesPrefix("custom_decoder_packet", packet_data, packet_size);
+                    printEncodedBytesPrefix("custom_decoder_packet", packet_data, encoded_packet_byte_count);
                     printEncodedBytesPrefix("reference_original_packet", reference_packet->data,
                         static_cast<std::size_t>(reference_packet->size));
                 }
@@ -291,11 +291,11 @@ int main(int argc, char** argv) {
                     if (!filtered_packet || filtered_packet->data == nullptr || filtered_packet->size <= 0) {
                         throw std::runtime_error("A saida filtrada deve possuir dados validos.");
                     }
-                    const bool has_three_byte_start_code = filtered_packet->size >= 3 &&
+                    const bool three_byte_start_code_present = filtered_packet->size >= 3 &&
                         filtered_packet->data[0] == 0 && filtered_packet->data[1] == 0 && filtered_packet->data[2] == 1;
-                    const bool has_four_byte_start_code = filtered_packet->size >= static_cast<int>(annex_b_start_code.size()) &&
+                    const bool four_byte_start_code_present = filtered_packet->size >= static_cast<int>(annex_b_start_code.size()) &&
                         std::memcmp(filtered_packet->data, annex_b_start_code.data(), annex_b_start_code.size()) == 0;
-                    if ((!has_three_byte_start_code && !has_four_byte_start_code) ||
+                    if ((!three_byte_start_code_present && !four_byte_start_code_present) ||
                         filtered_packet->data == original_packet->data ||
                         filtered_packet->pts != original_pts || filtered_packet->dts != original_dts ||
                         filtered_packet->duration != original_duration || filtered_packet->flags != original_flags ||

@@ -14,8 +14,8 @@ int main() {
     AvPacketPtr packet = allocateAvPacket();
     assert(packet != nullptr);
 
-    const int allocation_result = av_new_packet(packet.get(), 1);
-    assert(allocation_result == 0);
+    const int packet_allocation_status = av_new_packet(packet.get(), 1);
+    assert(packet_allocation_status == 0);
 
     packet->data[0] = 42;
     packet->pts = 123;
@@ -104,7 +104,7 @@ int main() {
     cloned_packet->stream_index = 5;
     cloned_packet->pos = 12345;
     const AVPacket unchanged_packet = *cloned_packet;
-    const auto expect_invalid_arguments = [&](
+    const auto invalid_argument_rejection_assertion = [&](
         AVRational source_time_base, AVRational output_time_base, int output_stream_index
     ) {
         bool invalid_arguments_rejected = false;
@@ -130,10 +130,10 @@ int main() {
     };
     const AVRational invalid_time_bases[] = {{0, 90000}, {-1, 90000}, {1, 0}, {1, -90000}};
     for (const AVRational invalid_time_base : invalid_time_bases) {
-        expect_invalid_arguments(invalid_time_base, {1, 1000}, 0);
-        expect_invalid_arguments({1, 90000}, invalid_time_base, 0);
+        invalid_argument_rejection_assertion(invalid_time_base, {1, 1000}, 0);
+        invalid_argument_rejection_assertion({1, 90000}, invalid_time_base, 0);
     }
-    expect_invalid_arguments({1, 90000}, {1, 1000}, -1);
+    invalid_argument_rejection_assertion({1, 90000}, {1, 1000}, -1);
 
     std::cout << "PASS: preparacao do pacote preserva bytes, ownership e timestamps desconhecidos\n";
     std::cout << "PASS: argumentos invalidos sao rejeitados sem alterar o pacote\n";

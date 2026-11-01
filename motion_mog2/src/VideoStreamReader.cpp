@@ -38,17 +38,17 @@ VideoStreamReader::VideoStreamReader(const std::string& input_source) {
         );
     }
 
-    double decoded_frame_retrieve_index_value = -1.0;
+    double decoded_frame_retrieval_index_value = -1.0;
     if (!this->nvdec_video_reader_->get(
             cv::cudacodec::VideoReaderProps::PROP_DECODED_FRAME_IDX,
-            decoded_frame_retrieve_index_value)) {
+            decoded_frame_retrieval_index_value)) {
         throw std::runtime_error(
             "Nao foi possivel obter PROP_DECODED_FRAME_IDX."
         );
     }
 
-    this->decoded_frame_retrieve_index_ =
-        static_cast<std::size_t>(decoded_frame_retrieve_index_value);
+    this->decoded_frame_retrieval_index_ =
+        static_cast<std::size_t>(decoded_frame_retrieval_index_value);
 }
 
 bool VideoStreamReader::read(
@@ -62,7 +62,7 @@ bool VideoStreamReader::read(
 
     if (!this->nvdec_video_reader_->retrieve(
             decoded_frame.decoded_frame_gpu,
-            this->decoded_frame_retrieve_index_) ||
+            this->decoded_frame_retrieval_index_) ||
         decoded_frame.decoded_frame_gpu.empty()) {
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
@@ -87,22 +87,22 @@ bool VideoStreamReader::read(
 }
 
 std::shared_ptr<const VideoStreamParameters>
-VideoStreamReader::videoStreamParameters() const {
-    return this->ffmpeg_video_source_->videoStreamParameters();
+VideoStreamReader::getVideoStreamParameters() const {
+    return this->ffmpeg_video_source_->getVideoStreamParameters();
 }
 
-double VideoStreamReader::fps() const {
+double VideoStreamReader::getFramesPerSecond() const {
     return this->stream_fps_;
 }
 
-int VideoStreamReader::width() const {
+int VideoStreamReader::getWidth() const {
     return this->decoded_frame_width_;
 }
 
-int VideoStreamReader::height() const {
+int VideoStreamReader::getHeight() const {
     return this->decoded_frame_height_;
 }
 
-std::uint64_t VideoStreamReader::decodedFrameCount() const {
+std::uint64_t VideoStreamReader::getDecodedFrameCount() const {
     return this->next_decoded_frame_index_;
 }

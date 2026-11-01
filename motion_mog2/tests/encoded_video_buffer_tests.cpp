@@ -34,7 +34,7 @@ int main() {
         for (std::size_t read_index = 0; read_index < 1000; ++read_index) {
             std::vector<AvPacketPtr> empty_read;
             default_buffer.appendPackets(empty_read);
-            if (default_buffer.isFull()) {
+            if (default_buffer.checkIfFull()) {
                 throw std::runtime_error("Chamadas sem pacotes nao devem preencher o buffer.");
             }
         }
@@ -48,7 +48,7 @@ int main() {
             packet->data[0] = 42;
             pending_packets.push_back(std::move(packet));
             default_buffer.appendPackets(pending_packets);
-            if (default_buffer.isFull() != (packet_index == 999) ||
+            if (default_buffer.checkIfFull() != (packet_index == 999) ||
                 !pending_packets.empty()) {
                 throw std::runtime_error("O limite padrao deve ser de 1000 pacotes, independentemente de chamadas vazias.");
             }
@@ -58,11 +58,11 @@ int main() {
         }
 
         {
-            EncodedVideoBuffer read_packets_buffer(3);
+            EncodedVideoBuffer encoded_packets_buffer(3);
             std::array<const AVPacket*, 3> retained_packet_addresses{};
             std::array<const unsigned char*, 3> retained_packet_data_addresses{};
             {
-                std::array<std::vector<AvPacketPtr>, 3> packets_from_reads;
+                std::array<std::vector<AvPacketPtr>, 3> encoded_packet_batches;
                 for (std::size_t packet_index = 0; packet_index < 3; ++packet_index) {
                     auto encoded_packet = allocateAvPacket();
                     if (av_new_packet(encoded_packet.get(), 1) < 0) {
@@ -79,15 +79,15 @@ int main() {
                     retained_packet_addresses[packet_index] = encoded_packet.get();
                     retained_packet_data_addresses[packet_index] = encoded_packet->data;
                     const std::size_t read_index = packet_index < 2 ? 0 : 2;
-                    packets_from_reads[read_index].push_back(std::move(encoded_packet));
+                    encoded_packet_batches[read_index].push_back(std::move(encoded_packet));
                 }
 
-                for (std::size_t read_index = 0; read_index < packets_from_reads.size(); ++read_index) {
-                    read_packets_buffer.appendPackets(packets_from_reads[read_index]);
-                    if (read_packets_buffer.isFull() != (read_index == 2)) {
+                for (std::size_t read_index = 0; read_index < encoded_packet_batches.size(); ++read_index) {
+                    encoded_packets_buffer.appendPackets(encoded_packet_batches[read_index]);
+                    if (encoded_packets_buffer.checkIfFull() != (read_index == 2)) {
                         throw std::runtime_error("O limite deve contar pacotes e ignorar chamadas sem pacotes.");
                     }
-                    if (!packets_from_reads[read_index].empty()) {
+                    if (!encoded_packet_batches[read_index].empty()) {
                         throw std::runtime_error("A insercao deve mover os pacotes e esvaziar o vetor recebido.");
                     }
                 }
@@ -102,8 +102,8 @@ int main() {
                 const auto* extra_packet_data_address = extra_packet->data;
                 extra_read_packets.push_back(std::move(extra_packet));
 
-                read_packets_buffer.appendPackets(extra_read_packets);
-                if (!read_packets_buffer.isFull() || extra_read_packets.size() != 1 ||
+                encoded_packets_buffer.appendPackets(extra_read_packets);
+                if (!encoded_packets_buffer.checkIfFull() || extra_read_packets.size() != 1 ||
                     extra_read_packets.front().get() != extra_packet_address ||
                     extra_read_packets.front()->data != extra_packet_data_address ||
                     extra_read_packets.front()->data[0] != 99) {
@@ -111,20 +111,20 @@ int main() {
                 }
 
                 EncodedVideoBuffer single_packet_buffer(1);
-                std::vector<AvPacketPtr> read_without_packets;
-                single_packet_buffer.appendPackets(read_without_packets);
-                if (single_packet_buffer.isFull() ||
-                    !read_without_packets.empty()) {
+                std::vector<AvPacketPtr> pending_encoded_packets;
+                single_packet_buffer.appendPackets(pending_encoded_packets);
+                if (single_packet_buffer.checkIfFull() ||
+                    !pending_encoded_packets.empty()) {
                     throw std::runtime_error("Com limite um, uma chamada vazia deve manter o buffer vazio.");
                 }
-                read_without_packets.push_back(std::move(extra_read_packets.front()));
+                pending_encoded_packets.push_back(std::move(extra_read_packets.front()));
                 extra_read_packets.clear();
-                single_packet_buffer.appendPackets(read_without_packets);
-                if (!single_packet_buffer.isFull() || !read_without_packets.empty()) {
+                single_packet_buffer.appendPackets(pending_encoded_packets);
+                if (!single_packet_buffer.checkIfFull() || !pending_encoded_packets.empty()) {
                     throw std::runtime_error("Um pacote deve preencher o limite um e ser consumido da entrada.");
                 }
-                single_packet_buffer.appendPackets(read_without_packets);
-                if (!single_packet_buffer.isFull()) {
+                single_packet_buffer.appendPackets(pending_encoded_packets);
+                if (!single_packet_buffer.checkIfFull()) {
                     throw std::runtime_error("Uma entrada vazia deve manter cheio o buffer de limite um.");
                 }
             }
@@ -154,18 +154,18 @@ int main() {
         std::array<std::array<const unsigned char*, 3>, 2> packet_data_addresses_by_cycle{};
         const std::array<std::size_t, 3> packet_counts_by_read{2, 0, 1};
         {
-            EncodedVideoBuffer reusable_read_packets_buffer(3);
-            if (!reusable_read_packets_buffer.takeBufferedEncodedPackets().empty()) {
+            EncodedVideoBuffer reusable_encoded_packets_buffer(3);
+            if (!reusable_encoded_packets_buffer.takeBufferedEncodedPackets().empty()) {
                 throw std::runtime_error("Retirar de um buffer vazio deve devolver um vetor vazio.");
             }
             std::vector<AvPacketPtr> partial_read_packets;
-            reusable_read_packets_buffer.appendPackets(partial_read_packets);
-            if (reusable_read_packets_buffer.isFull()) {
+            reusable_encoded_packets_buffer.appendPackets(partial_read_packets);
+            if (reusable_encoded_packets_buffer.checkIfFull()) {
                 throw std::runtime_error("Uma leitura parcial nao deve atingir o limite tres.");
             }
             {
                 const auto received_partial_read_packets =
-                    reusable_read_packets_buffer.takeBufferedEncodedPackets();
+                    reusable_encoded_packets_buffer.takeBufferedEncodedPackets();
                 if (!received_partial_read_packets.empty()) {
                     throw std::runtime_error("Retirar depois de uma leitura sem pacotes deve devolver um vetor vazio.");
                 }
@@ -174,7 +174,7 @@ int main() {
             for (std::size_t cycle_index = 0; cycle_index < received_read_packets_by_cycle.size(); ++cycle_index) {
                 std::size_t packet_index = 0;
                 for (std::size_t read_index = 0; read_index < packet_counts_by_read.size(); ++read_index) {
-                    std::vector<AvPacketPtr> packets_from_read;
+                    std::vector<AvPacketPtr> pending_encoded_packets;
                     for (std::size_t read_packet_index = 0;
                          read_packet_index < packet_counts_by_read[read_index]; ++read_packet_index) {
                         auto encoded_packet = allocateAvPacket();
@@ -189,17 +189,17 @@ int main() {
                         encoded_packet->time_base = AVRational{1, 90000};
                         packet_addresses_by_cycle[cycle_index][packet_index] = encoded_packet.get();
                         packet_data_addresses_by_cycle[cycle_index][packet_index] = encoded_packet->data;
-                        packets_from_read.push_back(std::move(encoded_packet));
+                        pending_encoded_packets.push_back(std::move(encoded_packet));
                         ++packet_index;
                     }
-                    reusable_read_packets_buffer.appendPackets(packets_from_read);
-                    if (reusable_read_packets_buffer.isFull() != (read_index == 2) || !packets_from_read.empty()) {
+                    reusable_encoded_packets_buffer.appendPackets(pending_encoded_packets);
+                    if (reusable_encoded_packets_buffer.checkIfFull() != (read_index == 2) || !pending_encoded_packets.empty()) {
                         throw std::runtime_error("A retirada deve liberar a capacidade para o mesmo limite de pacotes em cada ciclo.");
                     }
                 }
                 received_read_packets_by_cycle[cycle_index] =
-                    reusable_read_packets_buffer.takeBufferedEncodedPackets();
-                if (!reusable_read_packets_buffer.takeBufferedEncodedPackets().empty()) {
+                    reusable_encoded_packets_buffer.takeBufferedEncodedPackets();
+                if (!reusable_encoded_packets_buffer.takeBufferedEncodedPackets().empty()) {
                     throw std::runtime_error("Uma nova retirada sem insercoes deve continuar vazia.");
                 }
             }
@@ -256,15 +256,15 @@ int main() {
             initial_packets.push_back(std::move(pending_packets[1]));
             pending_packets.erase(pending_packets.begin(), pending_packets.begin() + 2);
             packet_buffer.appendPackets(initial_packets);
-            if (packet_buffer.isFull() || !initial_packets.empty()) {
+            if (packet_buffer.checkIfFull() || !initial_packets.empty()) {
                 throw std::runtime_error("Dois pacotes devem deixar uma vaga no limite tres.");
             }
             packet_buffer.appendPackets(pending_packets);
-            if (!packet_buffer.isFull() || pending_packets.size() != 3) {
+            if (!packet_buffer.checkIfFull() || pending_packets.size() != 3) {
                 throw std::runtime_error("Uma vaga deve consumir somente um dos quatro pacotes recebidos.");
             }
             packet_buffer.appendPackets(pending_packets);
-            if (!packet_buffer.isFull() || pending_packets.size() != 3) {
+            if (!packet_buffer.checkIfFull() || pending_packets.size() != 3) {
                 throw std::runtime_error("Um buffer cheio deve manter todos os excedentes na entrada.");
             }
 
@@ -287,7 +287,7 @@ int main() {
                 }
             }
             packet_buffer.appendPackets(pending_packets);
-            if (!packet_buffer.isFull() || !pending_packets.empty()) {
+            if (!packet_buffer.checkIfFull() || !pending_packets.empty()) {
                 throw std::runtime_error("A retirada deve permitir consumir as tres sobras no ciclo seguinte.");
             }
             auto remaining_packets = packet_buffer.takeBufferedEncodedPackets();

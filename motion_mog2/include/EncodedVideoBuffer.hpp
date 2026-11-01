@@ -12,7 +12,7 @@ public:
     void appendPackets(std::vector<AvPacketPtr>& pending_encoded_packets);
 
     [[nodiscard]]
-    bool isFull() const {
+    bool checkIfFull() const {
         return this->encoded_packets_buffer_.size() == this->max_buffered_packet_count_;
     }
 

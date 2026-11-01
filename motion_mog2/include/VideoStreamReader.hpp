@@ -30,18 +30,17 @@ public:
         cv::cuda::Stream& cuda_stream
     );
 
-    std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
+    std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
 
-    double fps() const;
-    int width() const;
-    int height() const;
-    std::uint64_t decodedFrameCount() const;
+    double getFramesPerSecond() const;
+    int getWidth() const;
+    int getHeight() const;
+    std::uint64_t getDecodedFrameCount() const;
 
 private:
-    // Declarada antes do reader para permanecer viva durante sua destruicao.
     cv::Ptr<FfmpegRawVideoSource> ffmpeg_video_source_;
     cv::Ptr<cv::cudacodec::VideoReader> nvdec_video_reader_;
-    std::size_t decoded_frame_retrieve_index_ = 0;
+    std::size_t decoded_frame_retrieval_index_ = 0;
 
     double stream_fps_ = 0.0;
     int decoded_frame_width_ = 0;

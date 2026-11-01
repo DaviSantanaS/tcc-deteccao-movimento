@@ -5,14 +5,14 @@
 #include <exception>
 #include <iostream>
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
+int main(int argument_count, char** argument_values) {
+    if (argument_count != 2) {
         std::cerr << "Uso: ffmpeg_raw_video_source_tests <entrada-de-video>\n";
         return 2;
     }
 
     try {
-        FfmpegRawVideoSource valid_source(argv[1]);
+        FfmpegRawVideoSource valid_source(argument_values[1]);
         if (valid_source.format().codec != cv::cudacodec::Codec::H264) {
             std::cerr << "O codec da entrada valida nao foi identificado como H.264.\n";
             return 1;
@@ -38,12 +38,12 @@ int main(int argc, char** argv) {
         }
 
         AVFormatContext* reference_input = nullptr;
-        const int reference_open_status = avformat_open_input(&reference_input, argv[1], nullptr, nullptr);
-        const auto close_reference_input = [](AVFormatContext* input) { avformat_close_input(&input); };
-        const std::unique_ptr<AVFormatContext, decltype(close_reference_input)> reference_context(
-            reference_input, close_reference_input
+        const int reference_input_initialization_status = avformat_open_input(&reference_input, argument_values[1], nullptr, nullptr);
+        const auto reference_input_deleter = [](AVFormatContext* input_format_context) { avformat_close_input(&input_format_context); };
+        const std::unique_ptr<AVFormatContext, decltype(reference_input_deleter)> reference_context(
+            reference_input, reference_input_deleter
         );
-        if (reference_open_status < 0 || avformat_find_stream_info(reference_context.get(), nullptr) < 0) {
+        if (reference_input_initialization_status < 0 || avformat_find_stream_info(reference_context.get(), nullptr) < 0) {
             throw std::runtime_error("Nao foi possivel abrir a entrada independente de referencia.");
         }
         const int reference_video_stream_index = av_find_best_stream(
@@ -65,27 +65,27 @@ int main(int argc, char** argv) {
         }
 
         for (int packet_number = 1; packet_number <= 3; ++packet_number) {
-            unsigned char* packet_data = nullptr;
-            std::size_t packet_size = 0;
+            unsigned char* encoded_packet_data = nullptr;
+            std::size_t encoded_packet_byte_count = 0;
 
-            if (!valid_source.getNextPacket(&packet_data, &packet_size)) {
+            if (!valid_source.getNextPacket(&encoded_packet_data, &encoded_packet_byte_count)) {
                 std::cerr << "Nao foi possivel obter o pacote de video "
                           << packet_number << ".\n";
                 return 1;
             }
 
-            if (packet_data == nullptr || packet_size == 0) {
+            if (encoded_packet_data == nullptr || encoded_packet_byte_count == 0) {
                 std::cerr << "O pacote de video retornado esta vazio.\n";
                 return 1;
             }
 
-            if (packet_size < 3 || packet_data[0] != 0 || packet_data[1] != 0 ||
-                (packet_data[2] != 1 && (packet_size < 4 || packet_data[2] != 0 || packet_data[3] != 1))) {
+            if (encoded_packet_byte_count < 3 || encoded_packet_data[0] != 0 || encoded_packet_data[1] != 0 ||
+                (encoded_packet_data[2] != 1 && (encoded_packet_byte_count < 4 || encoded_packet_data[2] != 0 || encoded_packet_data[3] != 1))) {
                 std::cerr << "O decoder deve receber um pacote em Annex B.\n";
                 return 1;
             }
 
-            std::cout << "decoder packet size=" << packet_size << '\n';
+            std::cout << "decoder packet size=" << encoded_packet_byte_count << '\n';
         }
 
         std::vector<AvPacketPtr> pending_packets =

@@ -10,8 +10,8 @@
 #include <stdexcept>
 #include <vector>
 
-int main(int argc, char** argv) {
-    if (argc != 2) {
+int main(int argument_count, char** argument_values) {
+    if (argument_count != 2) {
         std::cerr << "Uso: ffmpeg_video_stream_parameters_tests <arquivo-local-h264>\n";
         return 2;
     }
@@ -26,9 +26,9 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> original_codec_extra_data;
 
         {
-            FfmpegRawVideoSource video_source(argv[1]);
-            const auto first_video_stream_parameters = video_source.videoStreamParameters();
-            const auto second_video_stream_parameters = video_source.videoStreamParameters();
+            FfmpegRawVideoSource video_source(argument_values[1]);
+            const auto first_video_stream_parameters = video_source.getVideoStreamParameters();
+            const auto second_video_stream_parameters = video_source.getVideoStreamParameters();
             if (!first_video_stream_parameters ||
                 !first_video_stream_parameters->codec_parameters ||
                 first_video_stream_parameters.get() != second_video_stream_parameters.get()) {

@@ -32,8 +32,8 @@ public:
         cv::cuda::Stream& cuda_stream
     );
 
-    std::uint64_t warmupFrameCount() const;
-    bool isMotionActive() const;
+    std::uint64_t getWarmupFrameCount() const;
+    bool checkIfMotionIsActive() const;
 
 private:
     std::int64_t decoded_frame_pixel_count_ = 0;

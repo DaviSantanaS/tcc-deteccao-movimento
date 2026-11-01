@@ -13,9 +13,8 @@ struct AvPacketDeleter {
 using AvPacketPtr = std::unique_ptr<AVPacket, AvPacketDeleter>;
 
 [[nodiscard]] AvPacketPtr allocateAvPacket();
-[[nodiscard]] AvPacketPtr cloneAvPacket(const AVPacket& source);
+[[nodiscard]] AvPacketPtr cloneAvPacket(const AVPacket& source_packet);
 
-// Use a base de saida resultante do cabecalho e converta cada pacote uma unica vez.
 void prepareEncodedPacketForOutput(
     AVPacket& encoded_packet,
     AVRational source_time_base,

@@ -39,7 +39,7 @@ public:
     [[nodiscard]]
     EncodedVideoPackets dequeueEncodedPacketsWithStreamParameters(std::size_t packet_count);
 
-    std::shared_ptr<const VideoStreamParameters> videoStreamParameters() const;
+    std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
 
     FfmpegRawVideoSource(const FfmpegRawVideoSource&) = delete;
     FfmpegRawVideoSource& operator=(const FfmpegRawVideoSource&) = delete;

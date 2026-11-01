@@ -61,20 +61,20 @@ int main() {
         std::cout << "PASS: alocacoes independentes e transferencia de posse sem alterar o endereco.\n";
         std::cout << "PASS: reset, destruicao por escopo e proprietario vazio sem erros.\n";
 
-        const auto expect_rejection_without_stream_changes = [](
-            AVFormatContext& context,
-            const VideoStreamParameters& parameters
+        const auto unchanged_stream_rejection_assertion = [](
+            AVFormatContext& mp4_output_context,
+            const VideoStreamParameters& video_stream_parameters
         ) {
-            const unsigned int previous_stream_count = context.nb_streams;
-            AVStream** previous_streams = context.streams;
+            const unsigned int previous_stream_count = mp4_output_context.nb_streams;
+            AVStream** previous_streams = mp4_output_context.streams;
             bool rejected = false;
             try {
-                (void)createMp4VideoStream(context, parameters);
+                (void)createMp4VideoStream(mp4_output_context, video_stream_parameters);
             } catch (const std::invalid_argument&) {
                 rejected = true;
             }
-            if (!rejected || context.nb_streams != previous_stream_count ||
-                context.streams != previous_streams) {
+            if (!rejected || mp4_output_context.nb_streams != previous_stream_count ||
+                mp4_output_context.streams != previous_streams) {
                 throw std::runtime_error("Uma entrada invalida deve ser rejeitada sem alterar as streams.");
             }
         };
@@ -130,7 +130,7 @@ int main() {
 
             const AVCodecParameters* output_codec_parameters = video_output_stream.codecpar;
             const unsigned char* output_codec_extra_data = video_output_stream.codecpar->extradata;
-            expect_rejection_without_stream_changes(*video_output_context, video_stream_parameters);
+            unchanged_stream_rejection_assertion(*video_output_context, video_stream_parameters);
             if (video_output_stream.codecpar != output_codec_parameters ||
                 video_output_stream.codecpar->extradata != output_codec_extra_data ||
                 video_output_stream.codecpar->codec_tag != 0 ||
@@ -171,16 +171,16 @@ int main() {
         if (!unconfigured_output_context) {
             throw std::bad_alloc{};
         }
-        expect_rejection_without_stream_changes(*unconfigured_output_context, parameters_without_extra_data);
+        unchanged_stream_rejection_assertion(*unconfigured_output_context, parameters_without_extra_data);
         AVFormatContext* allocated_other_format_context = nullptr;
-        const int other_format_allocation_result = avformat_alloc_output_context2(
+        const int other_format_allocation_status = avformat_alloc_output_context2(
             &allocated_other_format_context, nullptr, "matroska", nullptr
         );
         AvOutputFormatContextPtr other_format_context{allocated_other_format_context};
-        if (other_format_allocation_result < 0 || !other_format_context) {
+        if (other_format_allocation_status < 0 || !other_format_context) {
             throw std::runtime_error("Nao foi possivel preparar um contexto nao MP4 para o teste.");
         }
-        expect_rejection_without_stream_changes(*other_format_context, parameters_without_extra_data);
+        unchanged_stream_rejection_assertion(*other_format_context, parameters_without_extra_data);
 
         AVIOContext attached_io_context_marker{};
         AvOutputFormatContextPtr empty_video_output_context = allocateMp4OutputContext();
@@ -189,39 +189,39 @@ int main() {
             throw std::runtime_error("Nao foi possivel obter um formato de entrada para o teste.");
         }
         empty_video_output_context->iformat = input_format_marker;
-        expect_rejection_without_stream_changes(*empty_video_output_context, parameters_without_extra_data);
+        unchanged_stream_rejection_assertion(*empty_video_output_context, parameters_without_extra_data);
         empty_video_output_context->iformat = nullptr;
         empty_video_output_context->pb = &attached_io_context_marker;
-        expect_rejection_without_stream_changes(*empty_video_output_context, parameters_without_extra_data);
+        unchanged_stream_rejection_assertion(*empty_video_output_context, parameters_without_extra_data);
         empty_video_output_context->pb = nullptr;
 
         VideoStreamParameters missing_codec_parameters{
             *source_without_extra_data, AVRational{1, 90000}
         };
         missing_codec_parameters.codec_parameters.reset();
-        expect_rejection_without_stream_changes(*empty_video_output_context, missing_codec_parameters);
-        const auto expect_source_rejection = [&] {
+        unchanged_stream_rejection_assertion(*empty_video_output_context, missing_codec_parameters);
+        const auto source_rejection_assertion = [&] {
             VideoStreamParameters invalid_source_parameters{
                 *source_without_extra_data, AVRational{1, 90000}
             };
-            expect_rejection_without_stream_changes(*empty_video_output_context, invalid_source_parameters);
+            unchanged_stream_rejection_assertion(*empty_video_output_context, invalid_source_parameters);
         };
         for (const AVMediaType invalid_media_type : {AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_UNKNOWN}) {
             source_without_extra_data->codec_type = invalid_media_type;
-            expect_source_rejection();
+            source_rejection_assertion();
         }
         source_without_extra_data->codec_type = AVMEDIA_TYPE_VIDEO;
         for (const AVCodecID invalid_codec_id : {AV_CODEC_ID_HEVC, AV_CODEC_ID_NONE}) {
             source_without_extra_data->codec_id = invalid_codec_id;
-            expect_source_rejection();
+            source_rejection_assertion();
         }
         source_without_extra_data->codec_id = AV_CODEC_ID_H264;
         for (const int invalid_dimension : {0, -1}) {
             source_without_extra_data->width = invalid_dimension;
-            expect_source_rejection();
+            source_rejection_assertion();
             source_without_extra_data->width = 1280;
             source_without_extra_data->height = invalid_dimension;
-            expect_source_rejection();
+            source_rejection_assertion();
             source_without_extra_data->height = 720;
         }
         const std::array<AVRational, 4> invalid_time_bases{{{0, 1}, {1, 0}, {-1, 1}, {1, -1}}};
@@ -230,7 +230,7 @@ int main() {
                 *source_without_extra_data, AVRational{1, 90000}
             };
             invalid_timestamp_parameters.packet_timestamp_time_base = invalid_time_base;
-            expect_rejection_without_stream_changes(*empty_video_output_context, invalid_timestamp_parameters);
+            unchanged_stream_rejection_assertion(*empty_video_output_context, invalid_timestamp_parameters);
         }
         for (const int invalid_extra_data_size : {-1, 3}) {
             auto inconsistent_codec_parameters = cloneAvCodecParameters(*source_without_extra_data);
@@ -239,7 +239,7 @@ int main() {
                 *source_without_extra_data, AVRational{1, 90000}
             };
             inconsistent_extra_data_parameters.codec_parameters = std::move(inconsistent_codec_parameters);
-            expect_rejection_without_stream_changes(*empty_video_output_context, inconsistent_extra_data_parameters);
+            unchanged_stream_rejection_assertion(*empty_video_output_context, inconsistent_extra_data_parameters);
         }
 
         std::cout << "PASS: stream H.264 pertence ao contexto MP4, com codec_tag zerado e base de tempo inicial.\n";

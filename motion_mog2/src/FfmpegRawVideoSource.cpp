@@ -16,13 +16,13 @@ extern "C" {
 
 namespace {
 
-std::string ffmpegErrorMessage(int error_code) {
+std::string getFfmpegErrorMessage(int error_code) {
     char error_buffer[AV_ERROR_MAX_STRING_SIZE] = {};
     av_strerror(error_code, error_buffer, sizeof(error_buffer));
     return error_buffer;
 }
 
-}  // namespace
+}
 
 void FfmpegRawVideoSource::AvFormatContextDeleter::operator()(
     AVFormatContext* input_context
@@ -46,13 +46,13 @@ FfmpegRawVideoSource::FfmpegRawVideoSource(const std::string& input_source)
 }
 
 std::shared_ptr<const VideoStreamParameters>
-FfmpegRawVideoSource::videoStreamParameters() const {
+FfmpegRawVideoSource::getVideoStreamParameters() const {
     return this->video_stream_parameters_;
 }
 
 void FfmpegRawVideoSource::openInputAndSelectVideoStream(const std::string& input_source) {
     AVFormatContext* opened_input_format_context = nullptr;
-    const int open_input_result = avformat_open_input(
+    const int input_initialization_status = avformat_open_input(
         &opened_input_format_context,
         input_source.c_str(),
         nullptr,
@@ -60,19 +60,19 @@ void FfmpegRawVideoSource::openInputAndSelectVideoStream(const std::string& inpu
     );
     AvFormatContextPtr input_format_context{opened_input_format_context};
 
-    if (open_input_result < 0) {
+    if (input_initialization_status < 0) {
         throw std::runtime_error(
             "Nao foi possivel abrir a entrada com FFmpeg: " +
-            ffmpegErrorMessage(open_input_result)
+            getFfmpegErrorMessage(input_initialization_status)
         );
     }
 
-    const int find_stream_info_result =
+    const int stream_information_retrieval_status =
         avformat_find_stream_info(input_format_context.get(), nullptr);
-    if (find_stream_info_result < 0) {
+    if (stream_information_retrieval_status < 0) {
         throw std::runtime_error(
             "Nao foi possivel obter informacoes dos streams: " +
-            ffmpegErrorMessage(find_stream_info_result)
+            getFfmpegErrorMessage(stream_information_retrieval_status)
         );
     }
 
@@ -88,7 +88,7 @@ void FfmpegRawVideoSource::openInputAndSelectVideoStream(const std::string& inpu
     if (selected_video_stream_index < 0) {
         throw std::runtime_error(
             "Nenhum stream de video foi encontrado: " +
-            ffmpegErrorMessage(selected_video_stream_index)
+            getFfmpegErrorMessage(selected_video_stream_index)
         );
     }
 
@@ -168,7 +168,6 @@ bool FfmpegRawVideoSource::get(int, double& property_value) const {
 }
 
 int FfmpegRawVideoSource::getFirstFrameIdx() const {
-    // A entrada RTSP do MVP nao faz seek.
     return 0;
 }
 
@@ -212,16 +211,16 @@ bool FfmpegRawVideoSource::getNextPacket(
     av_packet_unref(this->current_encoded_packet_.get());
 
     while (true) {
-        const int packet_read_status = av_read_frame(
+        const int packet_retrieval_status = av_read_frame(
             this->video_source_context_.get(),
             this->current_encoded_packet_.get()
         );
 
-        if (packet_read_status == AVERROR(EAGAIN)) {
+        if (packet_retrieval_status == AVERROR(EAGAIN)) {
             continue;
         }
 
-        if (packet_read_status < 0) {
+        if (packet_retrieval_status < 0) {
             return false;
         }
 
@@ -246,10 +245,10 @@ bool FfmpegRawVideoSource::getNextPacket(
                 return false;
             }
 
-            AvPacketPtr encoded_packet_to_enqueue = cloneAvPacket(*this->current_encoded_packet_);
+            AvPacketPtr encoded_packet_for_queue = cloneAvPacket(*this->current_encoded_packet_);
             {
                 std::lock_guard<std::mutex> lock(this->encoded_packets_queue_mutex_);
-                this->encoded_packets_queue_.push_back(std::move(encoded_packet_to_enqueue));
+                this->encoded_packets_queue_.push_back(std::move(encoded_packet_for_queue));
             }
 
             this->current_encoded_packet_for_nvdec_ = std::move(encoded_packets_for_nvdec.front());

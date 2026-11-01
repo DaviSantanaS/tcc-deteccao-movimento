@@ -130,10 +130,10 @@ MotionState Mog2MotionDetector::detectMotion(
     return motion_state;
 }
 
-std::uint64_t Mog2MotionDetector::warmupFrameCount() const {
+std::uint64_t Mog2MotionDetector::getWarmupFrameCount() const {
     return this->warmup_frame_count_;
 }
 
-bool Mog2MotionDetector::isMotionActive() const {
+bool Mog2MotionDetector::checkIfMotionIsActive() const {
     return this->motion_active_;
 }

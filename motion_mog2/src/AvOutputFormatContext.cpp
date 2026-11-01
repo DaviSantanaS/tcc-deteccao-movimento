@@ -23,15 +23,15 @@ void AvOutputFormatContextDeleter::operator()(
 
 AvOutputFormatContextPtr allocateMp4OutputContext() {
     AVFormatContext* allocated_output_context = nullptr;
-    const int allocation_result = avformat_alloc_output_context2(
+    const int output_context_allocation_status = avformat_alloc_output_context2(
         &allocated_output_context, nullptr, "mp4", nullptr
     );
     AvOutputFormatContextPtr output_context{allocated_output_context};
 
-    if (allocation_result < 0) {
+    if (output_context_allocation_status < 0) {
         throw std::runtime_error(
             "Nao foi possivel alocar o contexto MP4: erro " +
-            std::to_string(allocation_result)
+            std::to_string(output_context_allocation_status)
         );
     }
     if (!output_context) {
@@ -74,13 +74,13 @@ AVStream& createMp4VideoStream(
     if (!output_stream) {
         throw std::bad_alloc{};
     }
-    const int codec_parameters_copy_result = avcodec_parameters_copy(
+    const int codec_parameters_copy_status = avcodec_parameters_copy(
         output_stream->codecpar, &source_codec_parameters
     );
-    if (codec_parameters_copy_result < 0) {
+    if (codec_parameters_copy_status < 0) {
         throw std::runtime_error(
             "Nao foi possivel copiar os parametros para a stream MP4: erro " +
-            std::to_string(codec_parameters_copy_result)
+            std::to_string(codec_parameters_copy_status)
         );
     }
 
@@ -117,11 +117,10 @@ void writeMp4Header(
     }
 
     mp4_output_context.pb = output_io_context.get();
-    // O muxer pode alterar time_base; os pacotes devem usar o valor resultante.
-    const int header_write_result = avformat_write_header(&mp4_output_context, nullptr);
-    if (header_write_result < 0) {
+    const int header_output_status = avformat_write_header(&mp4_output_context, nullptr);
+    if (header_output_status < 0) {
         throw std::runtime_error(
-            "Nao foi possivel escrever o cabecalho MP4: erro " + std::to_string(header_write_result)
+            "Nao foi possivel escrever o cabecalho MP4: erro " + std::to_string(header_output_status)
         );
     }
     if (output_io_context->error < 0) {
@@ -160,12 +159,12 @@ void writeMp4Packet(
         throw std::invalid_argument("O pacote deve ter dados refcountados e timestamps preparados para a stream de saida.");
     }
 
-    const int packet_write_result = av_interleaved_write_frame(
+    const int packet_output_status = av_interleaved_write_frame(
         &mp4_output_context, &encoded_packet
     );
-    if (packet_write_result < 0) {
+    if (packet_output_status < 0) {
         throw std::runtime_error(
-            "Nao foi possivel escrever o pacote MP4: erro " + std::to_string(packet_write_result)
+            "Nao foi possivel escrever o pacote MP4: erro " + std::to_string(packet_output_status)
         );
     }
     if (mp4_output_context.pb->error < 0) {
@@ -269,11 +268,11 @@ void writeMp4Trailer(AVFormatContext& mp4_output_context) {
     }
 
     AVIOContext* const output_io_context = mp4_output_context.pb;
-    const int trailer_write_result = av_write_trailer(&mp4_output_context);
+    const int trailer_output_status = av_write_trailer(&mp4_output_context);
     mp4_output_context.pb = nullptr;
-    if (trailer_write_result < 0) {
+    if (trailer_output_status < 0) {
         throw std::runtime_error(
-            "Nao foi possivel finalizar o MP4: erro " + std::to_string(trailer_write_result)
+            "Nao foi possivel finalizar o MP4: erro " + std::to_string(trailer_output_status)
         );
     }
     if (output_io_context->error < 0) {

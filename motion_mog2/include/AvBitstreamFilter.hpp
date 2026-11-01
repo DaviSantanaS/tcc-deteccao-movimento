@@ -21,7 +21,6 @@ using AvBitstreamFilterPtr =
     AVRational packet_timestamp_time_base
 );
 
-// O contexto retornado por createH264AnnexBFilter deve estar sem saidas pendentes.
 [[nodiscard]] std::vector<AvPacketPtr> filterH264PacketToAnnexB(
     AVBSFContext& annex_b_filter_context,
     const AVPacket& original_encoded_packet
