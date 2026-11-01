@@ -1,9 +1,9 @@
 #pragma once
 
-#include "AvBitstreamFilter.hpp"
-#include "AvPacket.hpp"
-#include "EncodedVideoPackets.hpp"
-#include "VideoStreamParameters.hpp"
+#include "ffmpeg/AvBitstreamFilter.hpp"
+#include "ffmpeg/AvPacket.hpp"
+#include "ffmpeg/EncodedVideoPackets.hpp"
+#include "ffmpeg/VideoStreamParameters.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>

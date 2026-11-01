@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AvPacket.hpp"
+#include "ffmpeg/AvPacket.hpp"
 
 #include <cstddef>
 #include <vector>

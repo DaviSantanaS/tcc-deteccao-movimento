@@ -1,6 +1,6 @@
-#include "AvBitstreamFilter.hpp"
+#include "ffmpeg/AvBitstreamFilter.hpp"
 #include "EncodedBytesDiagnostics.hpp"
-#include "FfmpegRawVideoSource.hpp"
+#include "input/FfmpegRawVideoSource.hpp"
 
 #include <array>
 #include <cstddef>

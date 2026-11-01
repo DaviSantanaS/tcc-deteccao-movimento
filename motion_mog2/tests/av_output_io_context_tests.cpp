@@ -1,8 +1,8 @@
-#include "AvCodecParameters.hpp"
-#include "AvOutputFormatContext.hpp"
-#include "AvOutputIoContext.hpp"
-#include "AvPacket.hpp"
-#include "VideoStreamParameters.hpp"
+#include "ffmpeg/AvCodecParameters.hpp"
+#include "ffmpeg/AvOutputFormatContext.hpp"
+#include "ffmpeg/AvOutputIoContext.hpp"
+#include "ffmpeg/AvPacket.hpp"
+#include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <algorithm>
 #include <cerrno>

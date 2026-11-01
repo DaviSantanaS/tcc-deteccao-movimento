@@ -1,8 +1,8 @@
 #pragma once
 
-#include "AvOutputIoContext.hpp"
-#include "AvPacket.hpp"
-#include "EncodedVideoPackets.hpp"
+#include "ffmpeg/AvOutputIoContext.hpp"
+#include "ffmpeg/AvPacket.hpp"
+#include "ffmpeg/EncodedVideoPackets.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>

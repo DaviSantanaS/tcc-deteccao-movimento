@@ -1,4 +1,4 @@
-#include "EncodedVideoPackets.hpp"
+#include "ffmpeg/EncodedVideoPackets.hpp"
 
 #include <iostream>
 #include <stdexcept>

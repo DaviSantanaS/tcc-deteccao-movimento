@@ -1,4 +1,4 @@
-#include "EncodedVideoBuffer.hpp"
+#include "buffers/EncodedVideoBuffer.hpp"
 
 #include <array>
 #include <cstddef>

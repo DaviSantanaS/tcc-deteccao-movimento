@@ -1,7 +1,7 @@
 #pragma once
 
-#include "AvPacket.hpp"
-#include "VideoStreamParameters.hpp"
+#include "ffmpeg/AvPacket.hpp"
+#include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/core/cuda.hpp>

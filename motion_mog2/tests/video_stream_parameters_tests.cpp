@@ -1,4 +1,4 @@
-#include "VideoStreamParameters.hpp"
+#include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <iostream>
 #include <stdexcept>

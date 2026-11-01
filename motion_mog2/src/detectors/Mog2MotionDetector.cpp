@@ -1,4 +1,4 @@
-#include "Mog2MotionDetector.hpp"
+#include "detectors/Mog2MotionDetector.hpp"
 
 #include <opencv2/cudaarithm.hpp>
 #include <opencv2/imgproc.hpp>

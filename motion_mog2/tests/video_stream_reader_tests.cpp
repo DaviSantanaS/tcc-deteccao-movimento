@@ -1,4 +1,4 @@
-#include "VideoStreamReader.hpp"
+#include "input/VideoStreamReader.hpp"
 
 #include <cmath>
 #include <cstddef>

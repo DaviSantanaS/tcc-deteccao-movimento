@@ -1,6 +1,6 @@
 #pragma once
 
-#include "AvCodecParameters.hpp"
+#include "ffmpeg/AvCodecParameters.hpp"
 
 extern "C" {
 #include <libavutil/rational.h>

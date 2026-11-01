@@ -1,4 +1,4 @@
-#include "FfmpegRawVideoSource.hpp"
+#include "input/FfmpegRawVideoSource.hpp"
 
 #include <opencv2/core/utils/logger.hpp>
 

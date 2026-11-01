@@ -1,7 +1,7 @@
-#include "AvOutputFormatContext.hpp"
-#include "AvOutputIoContext.hpp"
-#include "EncodedVideoBuffer.hpp"
-#include "VideoStreamReader.hpp"
+#include "ffmpeg/AvOutputFormatContext.hpp"
+#include "ffmpeg/AvOutputIoContext.hpp"
+#include "buffers/EncodedVideoBuffer.hpp"
+#include "input/VideoStreamReader.hpp"
 
 #include <opencv2/core/cuda.hpp>
 

@@ -1,4 +1,4 @@
-#include "FfmpegRawVideoSource.hpp"
+#include "input/FfmpegRawVideoSource.hpp"
 
 #include <array>
 #include <cmath>

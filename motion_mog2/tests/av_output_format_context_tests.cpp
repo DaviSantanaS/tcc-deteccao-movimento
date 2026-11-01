@@ -1,6 +1,6 @@
-#include "AvCodecParameters.hpp"
-#include "AvOutputFormatContext.hpp"
-#include "VideoStreamParameters.hpp"
+#include "ffmpeg/AvCodecParameters.hpp"
+#include "ffmpeg/AvOutputFormatContext.hpp"
+#include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <array>
 #include <cstring>

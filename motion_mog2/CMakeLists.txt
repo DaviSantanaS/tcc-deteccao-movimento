@@ -14,17 +14,17 @@ pkg_check_modules(LIBAVUTIL REQUIRED IMPORTED_TARGET libavutil)
 add_executable(
         motion_mog2
         src/main.cpp
-        src/VideoStreamReader.cpp
-        src/Mog2MotionDetector.cpp
-        src/EncodedVideoBuffer.cpp
-        src/PreEventConfig.cpp
-        src/AvPacket.cpp
-        src/AvOutputFormatContext.cpp
-        src/AvOutputIoContext.cpp
-        src/AvCodecParameters.cpp
-        src/AvBitstreamFilter.cpp
-        src/VideoStreamParameters.cpp
-        src/FfmpegRawVideoSource.cpp
+        src/input/VideoStreamReader.cpp
+        src/detectors/Mog2MotionDetector.cpp
+        src/buffers/EncodedVideoBuffer.cpp
+        src/config/PreEventConfig.cpp
+        src/ffmpeg/AvPacket.cpp
+        src/ffmpeg/AvOutputFormatContext.cpp
+        src/ffmpeg/AvOutputIoContext.cpp
+        src/ffmpeg/AvCodecParameters.cpp
+        src/ffmpeg/AvBitstreamFilter.cpp
+        src/ffmpeg/VideoStreamParameters.cpp
+        src/input/FfmpegRawVideoSource.cpp
 )
 
 target_include_directories(
@@ -47,11 +47,11 @@ if(BUILD_TESTING)
     add_executable(
             av_output_io_context_tests
             tests/av_output_io_context_tests.cpp
-            src/AvOutputIoContext.cpp
-            src/AvOutputFormatContext.cpp
-            src/AvPacket.cpp
-            src/VideoStreamParameters.cpp
-            src/AvCodecParameters.cpp
+            src/ffmpeg/AvOutputIoContext.cpp
+            src/ffmpeg/AvOutputFormatContext.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
+            src/ffmpeg/AvCodecParameters.cpp
     )
 
     target_include_directories(
@@ -72,10 +72,10 @@ if(BUILD_TESTING)
     add_executable(
             av_output_format_context_tests
             tests/av_output_format_context_tests.cpp
-            src/AvOutputFormatContext.cpp
-            src/AvPacket.cpp
-            src/VideoStreamParameters.cpp
-            src/AvCodecParameters.cpp
+            src/ffmpeg/AvOutputFormatContext.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
+            src/ffmpeg/AvCodecParameters.cpp
     )
 
     target_include_directories(
@@ -96,10 +96,10 @@ if(BUILD_TESTING)
     add_executable(
             encoded_video_buffer_tests
             tests/encoded_video_buffer_tests.cpp
-            src/EncodedVideoBuffer.cpp
-            src/AvPacket.cpp
-            src/AvCodecParameters.cpp
-            src/VideoStreamParameters.cpp
+            src/buffers/EncodedVideoBuffer.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/AvCodecParameters.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
     )
 
     target_include_directories(
@@ -117,7 +117,7 @@ if(BUILD_TESTING)
     add_executable(
             av_packet_tests
             tests/av_packet_tests.cpp
-            src/AvPacket.cpp
+            src/ffmpeg/AvPacket.cpp
     )
 
     target_include_directories(
@@ -135,7 +135,7 @@ if(BUILD_TESTING)
     add_executable(
             av_codec_parameters_tests
             tests/av_codec_parameters_tests.cpp
-            src/AvCodecParameters.cpp
+            src/ffmpeg/AvCodecParameters.cpp
     )
 
     target_include_directories(
@@ -155,8 +155,8 @@ if(BUILD_TESTING)
     add_executable(
             video_stream_parameters_tests
             tests/video_stream_parameters_tests.cpp
-            src/VideoStreamParameters.cpp
-            src/AvCodecParameters.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
+            src/ffmpeg/AvCodecParameters.cpp
     )
 
     target_include_directories(
@@ -174,9 +174,9 @@ if(BUILD_TESTING)
     add_executable(
             encoded_video_packets_tests
             tests/encoded_video_packets_tests.cpp
-            src/AvPacket.cpp
-            src/AvCodecParameters.cpp
-            src/VideoStreamParameters.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/AvCodecParameters.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
     )
 
     target_include_directories(
@@ -194,11 +194,11 @@ if(BUILD_TESTING)
     add_executable(
             ffmpeg_video_stream_parameters_tests
             tests/ffmpeg_video_stream_parameters_tests.cpp
-            src/AvBitstreamFilter.cpp
-            src/FfmpegRawVideoSource.cpp
-            src/AvPacket.cpp
-            src/AvCodecParameters.cpp
-            src/VideoStreamParameters.cpp
+            src/ffmpeg/AvBitstreamFilter.cpp
+            src/input/FfmpegRawVideoSource.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/AvCodecParameters.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
     )
 
     target_include_directories(
@@ -218,11 +218,11 @@ if(BUILD_TESTING)
     add_executable(
             ffmpeg_encoded_video_packets_tests
             tests/ffmpeg_encoded_video_packets_tests.cpp
-            src/AvBitstreamFilter.cpp
-            src/FfmpegRawVideoSource.cpp
-            src/AvPacket.cpp
-            src/AvCodecParameters.cpp
-            src/VideoStreamParameters.cpp
+            src/ffmpeg/AvBitstreamFilter.cpp
+            src/input/FfmpegRawVideoSource.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/AvCodecParameters.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
     )
 
     target_include_directories(
@@ -242,12 +242,12 @@ if(BUILD_TESTING)
     add_executable(
             video_stream_reader_tests
             tests/video_stream_reader_tests.cpp
-            src/AvBitstreamFilter.cpp
-            src/VideoStreamReader.cpp
-            src/FfmpegRawVideoSource.cpp
-            src/AvPacket.cpp
-            src/AvCodecParameters.cpp
-            src/VideoStreamParameters.cpp
+            src/ffmpeg/AvBitstreamFilter.cpp
+            src/input/VideoStreamReader.cpp
+            src/input/FfmpegRawVideoSource.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/AvCodecParameters.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
     )
 
     target_include_directories(

@@ -1,5 +1,5 @@
-#include "VideoStreamReader.hpp"
-#include "FfmpegRawVideoSource.hpp"
+#include "input/VideoStreamReader.hpp"
+#include "input/FfmpegRawVideoSource.hpp"
 
 #include <opencv2/opencv.hpp>
 

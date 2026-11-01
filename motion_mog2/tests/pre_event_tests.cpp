@@ -1,5 +1,5 @@
-#include "EncodedVideoBuffer.hpp"
-#include "PreEventConfig.hpp"
+#include "buffers/EncodedVideoBuffer.hpp"
+#include "config/PreEventConfig.hpp"
 
 #include <cmath>
 #include <cstddef>
