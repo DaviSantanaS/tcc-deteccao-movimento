@@ -43,11 +43,24 @@ Não entregue uma implementação grande para ser estudada posteriormente.
 - Baseie cada explicação no código real da branch e nas alterações locais. Leia os métodos chamados antes de explicar seu comportamento; não deduza contratos apenas pelos nomes dos tipos.
 - Antes de afirmar uma garantia ou limitação de FFmpeg, OpenCV ou CUDA, confira a documentação oficial da API efetivamente usada e indique a fonte. Se não houver evidência suficiente, explicite a dúvida em vez de apresentar uma hipótese como fato.
 - Não use ressalvas genéricas sobre codecs, pacotes ou frames para rejeitar uma proposta sem verificar se elas se aplicam ao caminho deste projeto.
-- Neste caminho, `FfmpegRawVideoSource::getNextPacket()` usa `av_read_frame()` e preserva clones dos pacotes originais de vídeo. A documentação dessa função estabelece que, para vídeo, cada pacote retornado contém exatamente um frame codificado. Portanto, contar esses pacotes preservados permite contar os frames codificados nesse caminho. A garantia vem da função e do caminho dos dados, não simplesmente do tipo `AVPacket`. Referência: [contrato de av_read_frame() no FFmpeg 7.1](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavformat/avformat.h#L2232-L2259); confira também a versão usada no ambiente ao avaliar diferenças de API.
+- Neste caminho, `FfmpegEncodedVideoSource::getNextPacket()` usa `av_read_frame()` e preserva clones dos pacotes originais de vídeo. A documentação dessa função estabelece que, para vídeo, cada pacote retornado contém exatamente um frame codificado. Portanto, contar esses pacotes preservados permite contar os frames codificados nesse caminho. A garantia vem da função e do caminho dos dados, não simplesmente do tipo `AVPacket`. Referência: [contrato de av_read_frame() no FFmpeg 7.1](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavformat/avformat.h#L2232-L2259); confira também a versão usada no ambiente ao avaliar diferenças de API.
 - Diferencie essa relação da quantidade de frames já entregues pelo decoder. `VideoStreamReader::read()` recupera um frame decodificado e consulta `PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB` para retirar da fila a quantidade correspondente de pacotes; não presuma que o vetor retornado tenha sempre um elemento.
-- O buffer atual acumula os pacotes em um único `std::vector<AvPacketPtr>` e usa `size()` como contagem, sem contador separado. `max_buffered_packet_count_` limita pacotes; `appendPackets()` move somente o que cabe, mantém as sobras no vetor de entrada e retorna `void`. `isFull()` apenas consulta se o buffer está cheio. Chamadas sem pacotes não aumentam a ocupação. Essa mudança está nas alterações locais posteriores ao commit base indicado abaixo; confira o código antes de explicá-la.
+- O buffer atual acumula os pacotes em um único `std::vector<AvPacketPtr>` e usa `size()` como contagem, sem contador separado. `max_buffered_packet_count_` limita pacotes; `appendPackets()` move somente o que cabe, mantém as sobras no vetor de entrada e retorna `void`. `checkIfFull()` apenas consulta se o buffer está cheio. Chamadas sem pacotes não aumentam a ocupação. Essa mudança está nas alterações locais posteriores ao commit base indicado abaixo; confira o código antes de explicá-la.
 - Ao avaliar uma mudança na unidade do contador, examine também a checagem do limite, o retorno, o chamador e o destino dos excedentes. Mover o incremento para dentro do laço pode ultrapassar o limite em uma única chamada; trocar `==` por `>=` detecta a ultrapassagem, mas não impede inserir pacotes além do limite.
 - Diferencie sempre objetivo final, implementação existente, proposta em discussão e comportamento verificado por execução. Corrija explicitamente uma explicação anterior quando o código ou a documentação a contradisser.
+
+## Modo de implementação por spec
+
+Quando o pedido mandar executar um arquivo de `motion_mog2/specs/`, este modo substitui "Modo padrão de edição", "Regra principal", "Verificação de entendimento", "Limite de cada alteração" e "Proibições atuais", somente para aquela spec:
+
+- Implemente tudo o que a spec pede, e somente isso. Altere apenas os arquivos listados em "Escopo permitido".
+- Se a spec contradisser o código atual, pare e relate a divergência em vez de improvisar.
+- Siga as convenções de nomes e de qualidade deste arquivo.
+- Pode compilar e rodar os testes que a spec manda. Sem GPU, OpenCV com CUDA ou RTSP disponíveis, diga exatamente o que não foi possível rodar. Nunca declare um teste como aprovado sem tê-lo executado e visto a saída.
+- Faça um único commit ao final, com a mensagem indicada na spec. Não faça push.
+- Termine com o relatório pedido na spec: arquivos alterados, comandos executados com o resultado real, o que ficou sem verificação e qualquer decisão tomada que a spec não cobria.
+- Não adicione dependências além das autorizadas na spec.
+- Transcoding continua proibido.
 
 ## Modo padrão de edição
 
@@ -189,9 +202,11 @@ Transcoding é proibido no caminho de gravação. A existência de código de re
 
 Esta seção é uma referência da leitura do código, não uma substituição para conferir `git status`, commit, assinaturas e alterações locais em cada sessão.
 
-- Branch conferida: `agent/tcc-stepwise-codex-test`; commit base `091fd24` (`refactor: padroniza nomes e comentarios de motion_mog2`).
-- Componentes confirmados no caminho atual: `main`, `VideoStreamReader`, `FfmpegRawVideoSource`, `EncodedVideoBuffer`, `DecodedFrame`, `AvPacketPtr`, `VideoStreamParameters` e `EncodedVideoPackets`. Arquivos com estruturas antigas podem permanecer no repositório; isso não prova seu uso pelo `main`.
-- `FfmpegRawVideoSource` faz a leitura direta com FFmpeg, preserva clones dos `AVPacket` originais em uma fila e prepara uma versão em Annex B para o NVDEC.
+- Branch conferida: `agent/tcc-stepwise-codex-test`; commit base `2c1a384` (`feat: permite usar webcam no script de gravacao RTSP`).
+- Componentes confirmados no caminho atual: `main`, `VideoStreamReader`, `FfmpegEncodedVideoSource`, `EncodedVideoBuffer`, `DecodedFrame`, `AvPacketPtr`, `VideoStreamParameters` e `EncodedVideoPackets`. Arquivos com estruturas antigas podem permanecer no repositório; isso não prova seu uso pelo `main`.
+- `FfmpegEncodedVideoSource` faz a leitura direta com FFmpeg, preserva clones dos `AVPacket` originais em uma fila e prepara uma versão em Annex B para o NVDEC.
+- `VideoStreamReader` usa `allowFrameDrop = false`, `rawMode = true` e `udpSource = true` (`motion_mog2/src/input/VideoStreamReader.cpp`).
+- Está planejada a substituição da fila da fonte, do vetor pendente do `main` e do `EncodedVideoBuffer` por uma fila única (`EncodedPacketQueue`), conforme `motion_mog2/specs/`.
 - `VideoStreamReader` usa `cv::cudacodec::VideoReader` com essa fonte. O modo raw permite consultar a contagem usada para retirar os pacotes originais da fila; `read()` entrega separadamente o frame na GPU e um `std::vector<AvPacketPtr>`.
 - `EncodedVideoBuffer` move para um vetor único somente os pacotes que cabem, mantendo o excedente na entrada. A ocupação é o tamanho desse vetor, e sua transferência esvazia o buffer. O limite padrão é 1000 pacotes, configurável pelo `main`; não é um limite de bytes.
 - O `main` já contém gravação MP4 por remux, com corte no próximo keyframe após atingir o alvo de pacotes. Ele processa as sobras antes de pedir outro frame ao reader e mantém separadas as contagens de leituras decodificadas e pacotes. Essa gravação não é acionada por detecção de movimento.
