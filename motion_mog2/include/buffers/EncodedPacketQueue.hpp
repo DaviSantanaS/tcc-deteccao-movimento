@@ -46,6 +46,8 @@ public:
     [[nodiscard]]
     std::vector<AvPacketPtr> takeCountedPackets();
     [[nodiscard]]
+    std::vector<AvPacketPtr> takeCountedPacketsBeforeNextKeyframe(bool& keyframe_found);
+    [[nodiscard]]
     std::vector<AvPacketPtr> takeAllPackets();
 
     EncodedPacketQueue(const EncodedPacketQueue&) = delete;

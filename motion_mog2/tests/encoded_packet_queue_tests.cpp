@@ -235,6 +235,47 @@ int main() {
 
         {
             EncodedPacketQueue encoded_packet_queue;
+            pushPattern(encoded_packet_queue, "ppKpp", 0);
+            encoded_packet_queue.advanceCountedPackets(4);
+            bool keyframe_found = false;
+            requireIds(encoded_packet_queue.takeCountedPacketsBeforeNextKeyframe(keyframe_found), 0, 2,
+                       "Deve mover somente os pacotes 0 e 1 antes do keyframe");
+            require(keyframe_found && encoded_packet_queue.getCountedPacketCount() == 2 &&
+                        encoded_packet_queue.getQueuedPacketCount() == 3, "Keyframe e fronteira devem permanecer.");
+            auto counted_packets = encoded_packet_queue.takeCountedPackets();
+            requireIds(counted_packets, 2, 2, "Os contabilizados devem recomecar no keyframe 2");
+            require((counted_packets.front()->flags & AV_PKT_FLAG_KEY) != 0, "A frente deve continuar keyframe.");
+            requireIds(encoded_packet_queue.takeAllPackets(), 4, 1, "O pacote a frente deve permanecer intacto");
+        }
+        {
+            EncodedPacketQueue encoded_packet_queue;
+            pushPattern(encoded_packet_queue, "Kp", 0);
+            encoded_packet_queue.advanceCountedPackets(2);
+            bool keyframe_found = false;
+            require(encoded_packet_queue.takeCountedPacketsBeforeNextKeyframe(keyframe_found).empty(),
+                    "Keyframe na posicao zero deve produzir lote vazio.");
+            require(keyframe_found && encoded_packet_queue.getCountedPacketCount() == 2,
+                    "Keyframe na posicao zero deve permanecer contabilizado.");
+            requireIds(encoded_packet_queue.takeCountedPackets(), 0, 2, "Nenhum pacote deve ter sido retirado");
+        }
+        {
+            EncodedPacketQueue encoded_packet_queue;
+            pushPattern(encoded_packet_queue, "ppK", 0);
+            encoded_packet_queue.advanceCountedPackets(2);
+            bool keyframe_found = true;
+            requireIds(encoded_packet_queue.takeCountedPacketsBeforeNextKeyframe(keyframe_found), 0, 2,
+                       "Sem keyframe contabilizado deve mover toda a regiao contabilizada");
+            require(!keyframe_found && encoded_packet_queue.getCountedPacketCount() == 0 &&
+                        encoded_packet_queue.getQueuedPacketCount() == 1,
+                    "Keyframe a frente nao deve ser usado nem retirado.");
+            auto ahead_packets = encoded_packet_queue.takeAllPackets();
+            requireIds(ahead_packets, 2, 1, "O keyframe a frente deve permanecer");
+            require((ahead_packets.front()->flags & AV_PKT_FLAG_KEY) != 0, "Flag do keyframe a frente preservada.");
+        }
+        std::cout << "PASS: takeCountedPacketsBeforeNextKeyframe preserva o keyframe e a regiao a frente.\n";
+
+        {
+            EncodedPacketQueue encoded_packet_queue;
             pushPattern(encoded_packet_queue, makeGopPattern(2, 6), 0);
             encoded_packet_queue.advanceCountedPackets(6);
             for (const auto& [minimum_kept, maximum_counted] :

@@ -129,6 +129,13 @@ std::vector<AvPacketPtr> EncodedPacketQueue::takeCountedPackets() {
     return this->moveFrontPackets(this->counted_packet_count_);
 }
 
+std::vector<AvPacketPtr> EncodedPacketQueue::takeCountedPacketsBeforeNextKeyframe(bool& keyframe_found) {
+    std::lock_guard<std::mutex> lock(this->queue_mutex_);
+    std::size_t keyframe_position = 0;
+    keyframe_found = this->findNextCountedKeyframe(0, keyframe_position);
+    return this->moveFrontPackets(keyframe_found ? keyframe_position : this->counted_packet_count_);
+}
+
 std::vector<AvPacketPtr> EncodedPacketQueue::takeAllPackets() {
     std::lock_guard<std::mutex> lock(this->queue_mutex_);
     return this->moveFrontPackets(this->encoded_packets_.size());

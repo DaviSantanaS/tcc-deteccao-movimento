@@ -18,6 +18,7 @@ add_executable(
         src/detectors/Mog2MotionDetector.cpp
         src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
+        src/config/EventRecordingConfig.cpp
         src/ffmpeg/AvPacket.cpp
         src/ffmpeg/AvMp4OutputContext.cpp
         src/ffmpeg/AvOutputFileContext.cpp
@@ -136,6 +137,20 @@ if(BUILD_TESTING)
     )
 
     add_test(NAME encoded_packet_queue_tests COMMAND encoded_packet_queue_tests)
+
+    add_executable(
+            event_recording_config_tests
+            tests/event_recording_config_tests.cpp
+            src/config/EventRecordingConfig.cpp
+            src/config/PreEventConfig.cpp
+    )
+
+    target_include_directories(
+            event_recording_config_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_test(NAME event_recording_config_tests COMMAND event_recording_config_tests)
 
     add_executable(
             av_packet_tests
