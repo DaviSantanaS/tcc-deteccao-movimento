@@ -218,8 +218,9 @@ echo
 
 "${BUILD_DIR}/motion_mog2" \
   "${RTSP_URL}" \
+  "${RUN_DIR}/recordings" \
+  "${PRE_EVENT_SECONDS}" \
   "${MOTION_THRESHOLD_PERCENT}" \
   "${MOTION_START_FRAMES}" \
   "${MOTION_END_FRAMES}" \
-  "${PRE_EVENT_SECONDS}" \
   2>&1 | tee "${RUN_DIR}/motion_mog2.log"

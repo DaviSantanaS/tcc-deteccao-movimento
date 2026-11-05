@@ -1,6 +1,8 @@
 #include "ffmpeg/AvMp4OutputContext.hpp"
 #include "ffmpeg/AvOutputFileContext.hpp"
 #include "buffers/EncodedVideoBuffer.hpp"
+#include "config/PreEventConfig.hpp"
+#include "detectors/Mog2MotionDetector.hpp"
 #include "input/VideoStreamReader.hpp"
 
 #include <opencv2/core/cuda.hpp>
@@ -31,9 +33,9 @@ void handleTerminationSignal(int) {
 int main(int argument_count, char** argument_values) {
     const bool help_requested = argument_count == 2 &&
         (std::string(argument_values[1]) == "--help" || std::string(argument_values[1]) == "-h");
-    if (help_requested || argument_count > 4) {
-        std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [pacotes_por_trecho]\n"
-                     "Padrao: rtsp://127.0.0.1:8554/video ./recordings 1000\n"
+    if (help_requested || argument_count > 7) {
+        std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [pre_evento_s] [limiar_%] [inicio_frames] [fim_frames]\n"
+                     "Padrao: rtsp://127.0.0.1:8554/video ./recordings 5 1.0 2 3\n"
                      "O corte ocorre no proximo keyframe apos atingir o alvo de pacotes.\n";
         return help_requested ? 0 : 1;
     }
@@ -47,17 +49,40 @@ int main(int argument_count, char** argument_values) {
         const std::filesystem::path output_directory = std::filesystem::absolute(
             argument_count > 2 ? argument_values[2] : "./recordings"
         );
-        const std::string requested_packet_count_text = argument_count > 3 ? argument_values[3] : "1000";
-        if (requested_packet_count_text.empty() ||
-            !std::all_of(requested_packet_count_text.begin(), requested_packet_count_text.end(),
-                [](unsigned char character) { return character >= '0' && character <= '9'; })) {
-            throw std::invalid_argument("O alvo de pacotes deve ser um inteiro positivo.");
+        const double pre_event_seconds = parsePreEventSeconds(
+            argument_count > 3 ? argument_values[3] : "5"
+        );
+        const std::string motion_threshold_text = argument_count > 4 ? argument_values[4] : "1.0";
+        std::size_t parsed_character_count = 0;
+        const double motion_threshold_percent = std::stod(motion_threshold_text, &parsed_character_count);
+        if (parsed_character_count != motion_threshold_text.size()) {
+            throw std::invalid_argument("Limiar de movimento invalido: " + motion_threshold_text);
         }
-        const auto parsed_packet_count = std::stoull(requested_packet_count_text);
-        if (parsed_packet_count == 0 || parsed_packet_count > std::numeric_limits<std::size_t>::max()) {
-            throw std::invalid_argument("O alvo de pacotes deve caber em size_t e ser maior que zero.");
-        }
-        const auto target_recording_packet_count = static_cast<std::size_t>(parsed_packet_count);
+        const auto parse_motion_frame_count = [](const std::string& frame_count_text, const std::string& argument_name) {
+            if (frame_count_text.empty() ||
+                !std::all_of(frame_count_text.begin(), frame_count_text.end(),
+                    [](unsigned char character) { return character >= '0' && character <= '9'; })) {
+                throw std::invalid_argument(argument_name + " deve ser um inteiro positivo.");
+            }
+            const auto parsed_frame_count = std::stoull(frame_count_text);
+            if (parsed_frame_count == 0 ||
+                parsed_frame_count > static_cast<unsigned long long>(std::numeric_limits<int>::max())) {
+                throw std::invalid_argument(
+                    argument_name + " deve estar entre 1 e " + std::to_string(std::numeric_limits<int>::max()) + "."
+                );
+            }
+            return static_cast<int>(parsed_frame_count);
+        };
+        const int motion_start_frame_count = parse_motion_frame_count(
+            argument_count > 5 ? argument_values[5] : "2", "inicio_frames"
+        );
+        const int motion_end_frame_count = parse_motion_frame_count(
+            argument_count > 6 ? argument_values[6] : "3", "fim_frames"
+        );
+        // Temporario: removido na spec 05 (gravacao por evento).
+        constexpr std::size_t continuous_recording_packet_target = 1000;
+        // Valor negativo seleciona o aprendizado automatico do OpenCV.
+        constexpr double learning_rate = -1.0;
 
         if (cv::cuda::getCudaEnabledDeviceCount() <= 0) {
             std::cerr << "[fatal] Nenhuma GPU CUDA visível.\n";
@@ -66,17 +91,31 @@ int main(int argument_count, char** argument_values) {
         cv::cuda::setDevice(0);
 
         VideoStreamReader video_reader(input_source);
+        Mog2MotionDetector motion_detector(
+            video_reader.getWidth(),
+            video_reader.getHeight(),
+            video_reader.getFramesPerSecond(),
+            motion_threshold_percent,
+            motion_start_frame_count,
+            motion_end_frame_count,
+            learning_rate
+        );
+        const auto pre_event_packet_count = calculatePreEventFrameCount(
+            pre_event_seconds, video_reader.getFramesPerSecond()
+        );
         const auto video_stream_parameters = video_reader.getVideoStreamParameters();
         if (!video_stream_parameters) {
             throw std::invalid_argument("Os parametros da stream devem estar disponiveis apos construir o reader.");
         }
-        EncodedVideoBuffer encoded_video_buffer(target_recording_packet_count);
+        EncodedVideoBuffer encoded_video_buffer(continuous_recording_packet_target);
         std::filesystem::create_directories(output_directory);
 
         std::cout << "STREAM_FPS fps=" << video_reader.getFramesPerSecond() << "\n";
         std::cout << "STREAM_RESOLUTION width=" << video_reader.getWidth()
                   << " height=" << video_reader.getHeight() << "\n";
-        std::cout << "MP4_RECORDING target_encoded_packets=" << target_recording_packet_count
+        std::cout << "PRE_EVENT seconds=" << pre_event_seconds << " packets=" << pre_event_packet_count << "\n";
+        std::cout << "MOG2 warmup_frames=" << motion_detector.getWarmupFrameCount() << "\n";
+        std::cout << "MP4_RECORDING target_encoded_packets=" << continuous_recording_packet_target
                   << " directory=" << output_directory << "\n";
         std::cout.flush();
 
@@ -115,6 +154,17 @@ int main(int argument_count, char** argument_values) {
                     break;
                 }
                 cuda_stream.waitForCompletion();
+                const MotionState motion_state = motion_detector.detectMotion(
+                    decoded_frame.decoded_frame_gpu,
+                    decoded_frame.decoded_frame_index,
+                    cuda_stream
+                );
+                if (motion_state.started) {
+                    std::cout << "MOTION_STARTED frame=" << decoded_frame.decoded_frame_index << std::endl;
+                }
+                if (motion_state.ended) {
+                    std::cout << "MOTION_ENDED frame=" << decoded_frame.decoded_frame_index << std::endl;
+                }
             }
 
             for (const auto& packet : pending_encoded_packets) {
