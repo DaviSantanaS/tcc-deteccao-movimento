@@ -114,6 +114,29 @@ if(BUILD_TESTING)
 
     add_test(NAME encoded_video_buffer_tests COMMAND encoded_video_buffer_tests)
 
+    find_package(Threads REQUIRED)
+
+    add_executable(
+            encoded_packet_queue_tests
+            tests/encoded_packet_queue_tests.cpp
+            src/buffers/EncodedPacketQueue.cpp
+            src/ffmpeg/AvPacket.cpp
+    )
+
+    target_include_directories(
+            encoded_packet_queue_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            encoded_packet_queue_tests
+            PRIVATE
+            PkgConfig::LIBAVCODEC
+            Threads::Threads
+    )
+
+    add_test(NAME encoded_packet_queue_tests COMMAND encoded_packet_queue_tests)
+
     add_executable(
             av_packet_tests
             tests/av_packet_tests.cpp
