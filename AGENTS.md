@@ -62,6 +62,23 @@ Quando o pedido mandar executar um arquivo de `motion_mog2/specs/`, este modo su
 - Não adicione dependências além das autorizadas na spec.
 - Transcoding continua proibido.
 
+### Protocolo compacto
+Mensagens de tarefa vêm no formato TASK. Execute direto, sem plano nem narração. Responda SOMENTE no formato REPORT, sem prosa.
+TASK campos: ID, BASE (branch@hash esperado; diferente => BLOCKED), SPEC, SCOPE, BUILD, PRE (antes de editar), CHECK <id>: <comando/critério>, OUT <id>: <o que colar cru>, COMMIT, PUSH.
+REPORT:
+RESULT <ID> OK|FAIL|BLOCKED
+BASE <branch>@<hash>
+COMMIT <hash>|- PUSH <hash remoto>|-
+DIFF <arquivo +ins -del>; ...
+CHECK <id> PASS|FAIL|SKIP <evidência em 1 linha>
+OUT <id>
+<linhas cruas pedidas, sem cortes>
+END
+DEV <divergência ou decisão fora da spec, 1 linha cada>
+UNV <o que não foi verificado e por quê>
+LOG <caminho do log completo>
+Regras: FAIL/SKIP em CHECK obrigatório => sem commit/push. Não corrija falha não prevista: RESULT FAIL e pare. Nunca PASS sem saída vista. Vários TASK numa mensagem: um REPORT por TASK; FAIL num TASK => não execute os seguintes.
+
 ## Modo padrão de edição
 
 - Por padrão, Davi cria e altera os arquivos manualmente.
