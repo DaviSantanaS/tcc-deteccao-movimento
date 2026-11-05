@@ -17,6 +17,7 @@ add_executable(
         src/input/VideoStreamReader.cpp
         src/detectors/Mog2MotionDetector.cpp
         src/buffers/EncodedVideoBuffer.cpp
+        src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
         src/ffmpeg/AvPacket.cpp
         src/ffmpeg/AvMp4OutputContext.cpp
@@ -217,6 +218,7 @@ if(BUILD_TESTING)
     add_executable(
             ffmpeg_video_stream_parameters_tests
             tests/ffmpeg_video_stream_parameters_tests.cpp
+            src/buffers/EncodedPacketQueue.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/FfmpegEncodedVideoSource.cpp
             src/ffmpeg/AvPacket.cpp
@@ -241,6 +243,7 @@ if(BUILD_TESTING)
     add_executable(
             ffmpeg_encoded_video_packets_tests
             tests/ffmpeg_encoded_video_packets_tests.cpp
+            src/buffers/EncodedPacketQueue.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/FfmpegEncodedVideoSource.cpp
             src/ffmpeg/AvPacket.cpp
@@ -265,6 +268,7 @@ if(BUILD_TESTING)
     add_executable(
             video_stream_reader_tests
             tests/video_stream_reader_tests.cpp
+            src/buffers/EncodedPacketQueue.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/VideoStreamReader.cpp
             src/input/FfmpegEncodedVideoSource.cpp

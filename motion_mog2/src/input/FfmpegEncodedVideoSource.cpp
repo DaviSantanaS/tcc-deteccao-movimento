@@ -246,10 +246,7 @@ bool FfmpegEncodedVideoSource::getNextPacket(
             }
 
             AvPacketPtr encoded_packet_for_queue = cloneAvPacket(*this->current_encoded_packet_);
-            {
-                std::lock_guard<std::mutex> lock(this->encoded_packets_queue_mutex_);
-                this->encoded_packets_queue_.push_back(std::move(encoded_packet_for_queue));
-            }
+            this->encoded_packet_queue_.pushPacket(std::move(encoded_packet_for_queue));
 
             this->current_encoded_packet_for_nvdec_ = std::move(encoded_packets_for_nvdec.front());
             *encoded_packet_data_for_nvdec = this->current_encoded_packet_for_nvdec_->data;
@@ -265,25 +262,10 @@ bool FfmpegEncodedVideoSource::getNextPacket(
 std::vector<AvPacketPtr> FfmpegEncodedVideoSource::dequeueEncodedPackets(
     std::size_t packet_count
 ) {
-    std::lock_guard<std::mutex> lock(this->encoded_packets_queue_mutex_);
-
-    if (this->encoded_packets_queue_.size() < packet_count) {
-        throw std::runtime_error(
-            "Fila de AVPacket dessincronizada: esperados " +
-            std::to_string(packet_count) + ", disponiveis " +
-            std::to_string(this->encoded_packets_queue_.size()) + "."
-        );
-    }
-
-    std::vector<AvPacketPtr> dequeued_packets;
-    dequeued_packets.reserve(packet_count);
-
-    for (std::size_t packet_index = 0; packet_index < packet_count; ++packet_index) {
-        dequeued_packets.push_back(std::move(this->encoded_packets_queue_.front()));
-        this->encoded_packets_queue_.pop_front();
-    }
-
-    return dequeued_packets;
+    // A regiao contabilizada esta vazia na entrada, pois todo chamador
+    // retira todos os pacotes que avanca antes de chamar novamente.
+    this->encoded_packet_queue_.advanceCountedPackets(packet_count);
+    return this->encoded_packet_queue_.takeCountedPackets();
 }
 
 EncodedVideoPackets FfmpegEncodedVideoSource::dequeueEncodedPacketsWithStreamParameters(

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "buffers/EncodedPacketQueue.hpp"
 #include "ffmpeg/AvBitstreamFilter.hpp"
 #include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/EncodedVideoPackets.hpp"
@@ -12,9 +13,7 @@ extern "C" {
 #include <opencv2/cudacodec.hpp>
 
 #include <cstddef>
-#include <deque>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -68,6 +67,5 @@ private:
     std::shared_ptr<const VideoStreamParameters> video_stream_parameters_;
     AvBitstreamFilterPtr annex_b_filter_for_nvdec_;
 
-    std::mutex encoded_packets_queue_mutex_;
-    std::deque<AvPacketPtr> encoded_packets_queue_;
+    EncodedPacketQueue encoded_packet_queue_;
 };
