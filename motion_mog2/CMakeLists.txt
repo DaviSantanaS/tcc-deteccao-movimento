@@ -16,7 +16,6 @@ add_executable(
         src/main.cpp
         src/input/VideoStreamReader.cpp
         src/detectors/Mog2MotionDetector.cpp
-        src/buffers/EncodedVideoBuffer.cpp
         src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
         src/ffmpeg/AvPacket.cpp

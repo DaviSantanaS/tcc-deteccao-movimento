@@ -53,7 +53,6 @@ VideoStreamReader::VideoStreamReader(const std::string& input_source) {
 
 bool VideoStreamReader::read(
     DecodedFrame& decoded_frame,
-    std::vector<AvPacketPtr>& encoded_packets,
     cv::cuda::Stream& cuda_stream
 ) {
     if (!this->nvdec_video_reader_->grab(cuda_stream)) {
@@ -78,8 +77,7 @@ bool VideoStreamReader::read(
 
     const std::size_t encoded_packet_count =
         static_cast<std::size_t>(encoded_packet_count_value);
-    encoded_packets =
-        this->ffmpeg_video_source_->dequeueEncodedPackets(encoded_packet_count);
+    this->ffmpeg_video_source_->getEncodedPacketQueue().advanceCountedPackets(encoded_packet_count);
 
     decoded_frame.decoded_frame_index = this->next_decoded_frame_index_;
     ++this->next_decoded_frame_index_;
@@ -89,6 +87,10 @@ bool VideoStreamReader::read(
 std::shared_ptr<const VideoStreamParameters>
 VideoStreamReader::getVideoStreamParameters() const {
     return this->ffmpeg_video_source_->getVideoStreamParameters();
+}
+
+EncodedPacketQueue& VideoStreamReader::getEncodedPacketQueue() {
+    return this->ffmpeg_video_source_->getEncodedPacketQueue();
 }
 
 double VideoStreamReader::getFramesPerSecond() const {

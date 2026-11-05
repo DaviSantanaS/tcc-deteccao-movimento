@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ffmpeg/AvPacket.hpp"
+#include "buffers/EncodedPacketQueue.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <opencv2/cudacodec.hpp>
@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
 class FfmpegEncodedVideoSource;
 
@@ -26,11 +25,11 @@ public:
     [[nodiscard]]
     bool read(
         DecodedFrame& decoded_frame,
-        std::vector<AvPacketPtr>& encoded_packets,
         cv::cuda::Stream& cuda_stream
     );
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
+    EncodedPacketQueue& getEncodedPacketQueue();
 
     double getFramesPerSecond() const;
     int getWidth() const;

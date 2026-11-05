@@ -39,6 +39,7 @@ public:
     EncodedVideoPackets dequeueEncodedPacketsWithStreamParameters(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
+    EncodedPacketQueue& getEncodedPacketQueue();
 
     FfmpegEncodedVideoSource(const FfmpegEncodedVideoSource&) = delete;
     FfmpegEncodedVideoSource& operator=(const FfmpegEncodedVideoSource&) = delete;

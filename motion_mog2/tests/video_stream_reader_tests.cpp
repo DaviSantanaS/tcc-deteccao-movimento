@@ -53,9 +53,10 @@ int main(int argument_count, char** argument_values) {
             std::vector<AvPacketPtr> encoded_packets;
 
             for (std::uint64_t expected_frame_index = 0; expected_frame_index < 3; ++expected_frame_index) {
-                if (!video_reader.read(decoded_frame, encoded_packets, cuda_stream)) {
+                if (!video_reader.read(decoded_frame, cuda_stream)) {
                     throw std::runtime_error("O arquivo deve fornecer pelo menos tres frames decodificados.");
                 }
+                encoded_packets = video_reader.getEncodedPacketQueue().takeCountedPackets();
                 cuda_stream.waitForCompletion();
 
                 if (!std::isfinite(video_reader.getFramesPerSecond()) || video_reader.getFramesPerSecond() <= 0.0) {

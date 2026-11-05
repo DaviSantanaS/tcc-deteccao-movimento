@@ -50,6 +50,10 @@ FfmpegEncodedVideoSource::getVideoStreamParameters() const {
     return this->video_stream_parameters_;
 }
 
+EncodedPacketQueue& FfmpegEncodedVideoSource::getEncodedPacketQueue() {
+    return this->encoded_packet_queue_;
+}
+
 void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(const std::string& input_source) {
     AVFormatContext* opened_input_format_context = nullptr;
     const int input_initialization_status = avformat_open_input(
