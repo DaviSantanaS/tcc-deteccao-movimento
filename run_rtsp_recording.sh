@@ -3,11 +3,11 @@ set -euo pipefail
 
 show_usage() {
   printf '%s\n' \
-    'Uso: bash run_rtsp_recording.sh [arquivo_h264] [diretorio_saida] [pacotes_por_trecho]' \
-    '     bash run_rtsp_recording.sh --webcam [diretorio_saida] [pacotes_por_trecho]' \
-    'Padroes: ~/Vídeos/tcc/video_h264_fhd_60fps.mp4, recordings do projeto, 1000 pacotes.' \
+    'Uso: bash run_rtsp_recording.sh [arquivo_h264] [diretorio_saida] [pre_evento_s]' \
+    '     bash run_rtsp_recording.sh --webcam [diretorio_saida] [pre_evento_s]' \
+    'Padroes: ~/Vídeos/tcc/video_h264_fhd_60fps.mp4, recordings do projeto, 5 segundos de pre-evento.' \
     'Webcam: /dev/video0 em YUYV, 640x480 a 30 FPS; FFmpeg codifica H.264 para a entrada RTSP.' \
-    'RTSP local: rtsp://127.0.0.1:8554/video; corte dos MP4s no proximo keyframe.' \
+    'RTSP local: rtsp://127.0.0.1:8554/video; MP4s por evento com pre-evento.' \
     'SHOW_PREVIEW=0 desativa a janela; RTSP_TRANSPORT=tcp troca UDP por TCP no publicador e na previa.' \
     'MEDIAMTX_BIN e OPENCV_DIR permitem ajustar os caminhos das dependencias.' \
     'Ctrl+C finaliza o gravador antes de encerrar a transmissao. MP4s e logs sao preservados.'
@@ -112,7 +112,7 @@ if [[ "${input_source}" == --webcam ]]; then
   source_is_webcam=1
 fi
 output_directory="${2-${repo_directory}/recordings}"
-target_packet_count="${3-1000}"
+pre_event_seconds="${3-5}"
 rtsp_transport="${RTSP_TRANSPORT:-udp}"
 show_preview="${SHOW_PREVIEW:-1}"
 mediamtx_binary="${MEDIAMTX_BIN:-/home/davi/Downloads/tcc/mediamtx}"
@@ -120,13 +120,6 @@ opencv_directory="${OPENCV_DIR:-/home/davi/Downloads/tcc/opencv/install-cuda125/
 build_directory="${repo_directory}/motion_mog2/cmake-build-debug"
 rtsp_url='rtsp://127.0.0.1:8554/video'
 
-[[ "${target_packet_count}" =~ ^[0-9]+$ && ! "${target_packet_count}" =~ ^0+$ ]] ||
-  fail 'O alvo de pacotes deve ser um inteiro positivo.'
-target_packet_count="${target_packet_count#"${target_packet_count%%[!0]*}"}"
-if (( ${#target_packet_count} > 20 )) ||
-   { (( ${#target_packet_count} == 20 )) && [[ "${target_packet_count}" > 18446744073709551615 ]]; }; then
-  fail 'O alvo de pacotes excede o limite de 64 bits do gravador.'
-fi
 [[ "${rtsp_transport}" == udp || "${rtsp_transport}" == tcp ]] || fail 'RTSP_TRANSPORT deve ser udp ou tcp.'
 [[ "${show_preview}" == 0 || "${show_preview}" == 1 ]] || fail 'SHOW_PREVIEW deve ser 0 ou 1.'
 [[ -n "${output_directory}" ]] || fail 'O diretorio de saida nao pode ser vazio.'
@@ -222,8 +215,8 @@ if [[ "${show_preview}" == 1 ]]; then
   preview_pid=$!
 fi
 
-printf '\n[4/4] Gravando MP4s; Ctrl+C finaliza o trecho atual...\n'
-setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${target_packet_count}" \
+printf '\n[4/4] Gravando MP4s por evento; Ctrl+C finaliza o evento atual...\n'
+setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${pre_event_seconds}" \
   >"${run_directory}/recording.log" 2>&1 &
 recorder_pid=$!
 tail -n +1 -s 0.2 -f "${run_directory}/recording.log" &
