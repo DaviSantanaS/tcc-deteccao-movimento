@@ -7,7 +7,6 @@ extern "C" {
 }
 
 #include <memory>
-#include <vector>
 
 struct AvBitstreamFilterDeleter {
     void operator()(AVBSFContext* filter_context) const noexcept;
@@ -21,7 +20,9 @@ using AvBitstreamFilterPtr =
     AVRational packet_timestamp_time_base
 );
 
-[[nodiscard]] std::vector<AvPacketPtr> filterH264PacketToAnnexB(
+// Envia um pacote ao filtro e devolve exatamente um pacote filtrado.
+// Lanca excecao se o filtro nao produzir saida ou produzir mais de um pacote.
+[[nodiscard]] AvPacketPtr filterH264PacketToAnnexB(
     AVBSFContext& annex_b_filter_context,
     const AVPacket& original_encoded_packet
 );

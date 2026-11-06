@@ -18,8 +18,9 @@ int main(int argument_count, char** argument_values) {
     }
 
     try {
-        EncodedVideoPackets first_packet_batch;
-        EncodedVideoPackets remaining_packet_batch;
+        const auto encoded_video_buffer = std::make_shared<EncodedVideoBuffer>();
+        std::array<AvPacketPtr, 3> buffered_packets;
+        AVRational source_packet_timestamp_time_base{0, 1};
         std::weak_ptr<const VideoStreamParameters> video_stream_parameters_lifetime;
         std::weak_ptr<const AVCodecParameters> codec_parameters_lifetime;
         std::array<const unsigned char*, 3> original_packet_data_addresses{};
@@ -29,7 +30,17 @@ int main(int argument_count, char** argument_values) {
         std::vector<unsigned char> retained_filtered_packet_contents;
 
         {
-            FfmpegEncodedVideoSource video_source(argument_values[1]);
+            bool rejected_missing_buffer = false;
+            try {
+                FfmpegEncodedVideoSource source_without_buffer(argument_values[1], nullptr);
+            } catch (const std::invalid_argument&) {
+                rejected_missing_buffer = true;
+            }
+            if (!rejected_missing_buffer) {
+                throw std::runtime_error("A fonte deve rejeitar a ausencia de buffer.");
+            }
+
+            FfmpegEncodedVideoSource video_source(argument_values[1], encoded_video_buffer);
             const auto expected_video_stream_parameters = video_source.getVideoStreamParameters();
             video_stream_parameters_lifetime = expected_video_stream_parameters;
             codec_parameters_lifetime = expected_video_stream_parameters->codec_parameters;
@@ -50,6 +61,7 @@ int main(int argument_count, char** argument_values) {
                 codec_parameters->extradata + codec_parameters->extradata_size
             );
             const auto packet_timestamp_time_base = expected_video_stream_parameters->packet_timestamp_time_base;
+            source_packet_timestamp_time_base = packet_timestamp_time_base;
             auto h264_annex_b_filter = createH264AnnexBFilter(*codec_parameters, packet_timestamp_time_base);
             if (!h264_annex_b_filter ||
                 h264_annex_b_filter->par_in == nullptr || h264_annex_b_filter->par_out == nullptr) {
@@ -172,11 +184,11 @@ int main(int argument_count, char** argument_values) {
                 original_packet_contents[packet_index].assign(
                     reference_packet->data, reference_packet->data + reference_packet->size
                 );
-                const auto expected_decoder_packets = filterH264PacketToAnnexB(
+                const auto expected_decoder_packet = filterH264PacketToAnnexB(
                     *reference_decoder_filter, *reference_packet
                 );
-                if (expected_decoder_packets.size() != 1 || !expected_decoder_packets.front() ||
-                    expected_decoder_packets.front()->data == nullptr || expected_decoder_packets.front()->size <= 0) {
+                if (!expected_decoder_packet || expected_decoder_packet->data == nullptr ||
+                    expected_decoder_packet->size <= 0) {
                     throw std::runtime_error("O filtro de referencia deve produzir uma saida valida por entrada.");
                 }
                 unsigned char* packet_data = nullptr;
@@ -185,7 +197,6 @@ int main(int argument_count, char** argument_values) {
                     packet_data == nullptr || encoded_packet_byte_count == 0) {
                     throw std::runtime_error("Nao foi possivel obter os tres pacotes locais de teste.");
                 }
-                const auto& expected_decoder_packet = expected_decoder_packets.front();
                 const bool annex_b_start_code_present = encoded_packet_byte_count >= 3 && packet_data[0] == 0 &&
                     packet_data[1] == 0 && (packet_data[2] == 1 || (encoded_packet_byte_count >= 4 &&
                         packet_data[2] == 0 && packet_data[3] == 1));
@@ -210,35 +221,15 @@ int main(int argument_count, char** argument_values) {
                 throw std::runtime_error("A entrega Annex B nao deve alterar a extradata publica ou preservada.");
             }
 
-            const auto empty_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(0);
-            if (!empty_packet_batch.encoded_packets.empty() ||
-                empty_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
-                throw std::runtime_error("Retirar zero pacotes deve retornar uma colecao vazia com configuracao.");
+            if (encoded_video_buffer->getPacketCount() != reference_packets.size()) {
+                throw std::runtime_error("Cada getNextPacket deve guardar exatamente um pacote no buffer.");
             }
-
-            bool rejected_excessive_packet_count = false;
-            try {
-                video_source.dequeueEncodedPacketsWithStreamParameters(4);
-            } catch (const std::runtime_error&) {
-                rejected_excessive_packet_count = true;
-            }
-            if (!rejected_excessive_packet_count) {
-                throw std::runtime_error("A retirada deve rejeitar uma quantidade maior que a fila.");
-            }
-
-            first_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(2);
-            remaining_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(1);
-            if (first_packet_batch.encoded_packets.size() != 2 ||
-                remaining_packet_batch.encoded_packets.size() != 1 ||
-                first_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get() ||
-                remaining_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
-                throw std::runtime_error("As retiradas devem preservar as quantidades e compartilhar a configuracao.");
+            for (auto& buffered_packet : buffered_packets) {
+                buffered_packet = encoded_video_buffer->tryPopPacket();
             }
 
             for (std::size_t packet_index = 0; packet_index < reference_packets.size(); ++packet_index) {
-                const auto& queued_packet = packet_index < 2
-                    ? first_packet_batch.encoded_packets[packet_index]
-                    : remaining_packet_batch.encoded_packets[0];
+                const auto& queued_packet = buffered_packets[packet_index];
                 const auto& reference_packet = reference_packets[packet_index];
                 if (!queued_packet || queued_packet->data == nullptr || queued_packet->size != reference_packet->size ||
                     queued_packet->pts != reference_packet->pts || queued_packet->dts != reference_packet->dts ||
@@ -263,8 +254,8 @@ int main(int argument_count, char** argument_values) {
                 throw std::runtime_error("Um pacote vazio deve ser rejeitado sem encerrar o filtro.");
             }
 
-            for (std::size_t packet_index = 0; packet_index < first_packet_batch.encoded_packets.size(); ++packet_index) {
-                const auto& original_packet = first_packet_batch.encoded_packets[packet_index];
+            for (std::size_t packet_index = 0; packet_index < 2; ++packet_index) {
+                const auto& original_packet = buffered_packets[packet_index];
                 const auto original_pts = original_packet->pts;
                 const auto original_dts = original_packet->dts;
                 const auto original_duration = original_packet->duration;
@@ -272,7 +263,7 @@ int main(int argument_count, char** argument_values) {
                 const auto original_stream_index = original_packet->stream_index;
                 const auto original_position = original_packet->pos;
                 const auto original_time_base = original_packet->time_base;
-                auto filtered_packets = filterH264PacketToAnnexB(*h264_annex_b_filter, *original_packet);
+                auto filtered_packet = filterH264PacketToAnnexB(*h264_annex_b_filter, *original_packet);
                 const auto& expected_original_contents = original_packet_contents[packet_index];
                 if (original_packet->data != original_packet_data_addresses[packet_index] ||
                     original_packet->size != static_cast<int>(expected_original_contents.size()) ||
@@ -284,46 +275,41 @@ int main(int argument_count, char** argument_values) {
                     std::memcmp(original_packet->data, expected_original_contents.data(), expected_original_contents.size()) != 0) {
                     throw std::runtime_error("A filtragem nao deve consumir nem alterar o pacote original.");
                 }
-                if (filtered_packets.empty()) {
-                    throw std::runtime_error("Cada um dos dois pacotes deste MP4 deve produzir uma saida filtrada.");
+                if (!filtered_packet || filtered_packet->data == nullptr || filtered_packet->size <= 0) {
+                    throw std::runtime_error("A saida filtrada deve possuir dados validos.");
                 }
-                for (const auto& filtered_packet : filtered_packets) {
-                    if (!filtered_packet || filtered_packet->data == nullptr || filtered_packet->size <= 0) {
-                        throw std::runtime_error("A saida filtrada deve possuir dados validos.");
-                    }
-                    const bool three_byte_start_code_present = filtered_packet->size >= 3 &&
-                        filtered_packet->data[0] == 0 && filtered_packet->data[1] == 0 && filtered_packet->data[2] == 1;
-                    const bool four_byte_start_code_present = filtered_packet->size >= static_cast<int>(annex_b_start_code.size()) &&
-                        std::memcmp(filtered_packet->data, annex_b_start_code.data(), annex_b_start_code.size()) == 0;
-                    if ((!three_byte_start_code_present && !four_byte_start_code_present) ||
-                        filtered_packet->data == original_packet->data ||
-                        filtered_packet->pts != original_pts || filtered_packet->dts != original_dts ||
-                        filtered_packet->duration != original_duration || filtered_packet->flags != original_flags ||
-                        filtered_packet->stream_index != original_stream_index ||
-                        filtered_packet->time_base.num != h264_annex_b_filter->time_base_out.num ||
-                        filtered_packet->time_base.den != h264_annex_b_filter->time_base_out.den) {
-                        throw std::runtime_error("A saida deve estar em Annex B, com dados independentes e metadados preservados.");
-                    }
+                const bool three_byte_start_code_present = filtered_packet->size >= 3 &&
+                    filtered_packet->data[0] == 0 && filtered_packet->data[1] == 0 && filtered_packet->data[2] == 1;
+                const bool four_byte_start_code_present = filtered_packet->size >= static_cast<int>(annex_b_start_code.size()) &&
+                    std::memcmp(filtered_packet->data, annex_b_start_code.data(), annex_b_start_code.size()) == 0;
+                if ((!three_byte_start_code_present && !four_byte_start_code_present) ||
+                    filtered_packet->data == original_packet->data ||
+                    filtered_packet->pts != original_pts || filtered_packet->dts != original_dts ||
+                    filtered_packet->duration != original_duration || filtered_packet->flags != original_flags ||
+                    filtered_packet->stream_index != original_stream_index ||
+                    filtered_packet->time_base.num != h264_annex_b_filter->time_base_out.num ||
+                    filtered_packet->time_base.den != h264_annex_b_filter->time_base_out.den) {
+                    throw std::runtime_error("A saida deve estar em Annex B, com dados independentes e metadados preservados.");
                 }
                 if (packet_index == 0) {
-                    printEncodedBytesPrefix("filtered_decoder_packet", filtered_packets.front()->data,
-                        static_cast<std::size_t>(filtered_packets.front()->size));
-                    retained_filtered_packet_data_address = filtered_packets.front()->data;
-                    retained_filtered_packet_contents.assign(filtered_packets.front()->data,
-                        filtered_packets.front()->data + filtered_packets.front()->size);
-                    retained_filtered_packet = std::move(filtered_packets.front());
+                    printEncodedBytesPrefix("filtered_decoder_packet", filtered_packet->data,
+                        static_cast<std::size_t>(filtered_packet->size));
+                    retained_filtered_packet_data_address = filtered_packet->data;
+                    retained_filtered_packet_contents.assign(filtered_packet->data,
+                        filtered_packet->data + filtered_packet->size);
+                    retained_filtered_packet = std::move(filtered_packet);
                 }
             }
 
             auto undrained_filter = createH264AnnexBFilter(*codec_parameters, packet_timestamp_time_base);
-            auto pending_filter_input = cloneAvPacket(*first_packet_batch.encoded_packets.front());
+            auto pending_filter_input = cloneAvPacket(*buffered_packets.front());
             if (av_bsf_send_packet(undrained_filter.get(), pending_filter_input.get()) < 0) {
                 throw std::runtime_error("Nao foi possivel preparar o caso de filtro com dados pendentes.");
             }
             bool rejected_undrained_filter = false;
             try {
                 static_cast<void>(filterH264PacketToAnnexB(
-                    *undrained_filter, *first_packet_batch.encoded_packets.front()
+                    *undrained_filter, *buffered_packets.front()
                 ));
             } catch (const std::runtime_error&) {
                 rejected_undrained_filter = true;
@@ -332,23 +318,13 @@ int main(int argument_count, char** argument_values) {
                 throw std::runtime_error("O envio com filtro nao drenado deve informar erro.");
             }
 
-            bool rejected_empty_queue = false;
-            try {
-                video_source.dequeueEncodedPacketsWithStreamParameters(1);
-            } catch (const std::runtime_error&) {
-                rejected_empty_queue = true;
-            }
-            if (!rejected_empty_queue) {
-                throw std::runtime_error("A fila deve estar vazia apos retirar os tres pacotes.");
+            if (encoded_video_buffer->tryPopPacket() != nullptr || encoded_video_buffer->getPacketCount() != 0) {
+                throw std::runtime_error("O buffer deve estar vazio apos retirar os tres pacotes.");
             }
         }
 
-        if (video_stream_parameters_lifetime.expired() || codec_parameters_lifetime.expired() ||
-            first_packet_batch.video_stream_parameters->codec_parameters->codec_id != AV_CODEC_ID_H264 ||
-            first_packet_batch.video_stream_parameters->codec_parameters->width <= 0 ||
-            first_packet_batch.video_stream_parameters->codec_parameters->extradata == nullptr ||
-            first_packet_batch.video_stream_parameters->codec_parameters->extradata_size <= 0) {
-            throw std::runtime_error("As colecoes devem manter a configuracao valida apos destruir a fonte.");
+        if (!video_stream_parameters_lifetime.expired() || !codec_parameters_lifetime.expired()) {
+            throw std::runtime_error("Destruir a fonte deve liberar a configuracao; os pacotes nao dependem dela.");
         }
 
         if (!retained_filtered_packet ||
@@ -360,12 +336,9 @@ int main(int argument_count, char** argument_values) {
         }
 
         for (std::size_t packet_index = 0; packet_index < original_packet_contents.size(); ++packet_index) {
-            const auto& retained_packet = packet_index < 2
-                ? first_packet_batch.encoded_packets[packet_index]
-                : remaining_packet_batch.encoded_packets[0];
+            const auto& retained_packet = buffered_packets[packet_index];
             const auto& expected_packet_contents = original_packet_contents[packet_index];
-            const auto& packet_timestamp_time_base =
-                first_packet_batch.video_stream_parameters->packet_timestamp_time_base;
+            const auto& packet_timestamp_time_base = source_packet_timestamp_time_base;
             if (!retained_packet ||
                 retained_packet->data != original_packet_data_addresses[packet_index] ||
                 static_cast<std::size_t>(retained_packet->size) != expected_packet_contents.size() ||
@@ -376,19 +349,13 @@ int main(int argument_count, char** argument_values) {
             }
         }
 
-        first_packet_batch = EncodedVideoPackets{};
-        if (video_stream_parameters_lifetime.expired() || codec_parameters_lifetime.expired()) {
-            throw std::runtime_error("A segunda colecao deve manter a configuracao viva.");
-        }
-
-        remaining_packet_batch = EncodedVideoPackets{};
-        if (!video_stream_parameters_lifetime.expired() || !codec_parameters_lifetime.expired()) {
-            throw std::runtime_error("A ultima colecao deve liberar a configuracao e seus parametros.");
+        if (encoded_video_buffer.use_count() != 1) {
+            throw std::runtime_error("Destruir a fonte deve liberar sua referencia ao buffer.");
         }
 
         std::cout << "PASS: filtro H.264 inicializado, parametros independentes e entradas invalidas rejeitadas.\n";
         std::cout << "PASS: dois pacotes filtrados em Annex B, originais intactos e saida com vida util segura.\n";
-        std::cout << "PASS: fonte entrega tres pacotes Annex B, preserva originais e extradata e mantem vida util segura.\n";
+        std::cout << "PASS: fonte entrega tres pacotes Annex B ao NVDEC e guarda os originais no buffer, com vida util segura.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

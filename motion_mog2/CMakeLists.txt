@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenCV 4.5 REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 
 pkg_check_modules(LIBAVCODEC REQUIRED IMPORTED_TARGET libavcodec)
 pkg_check_modules(LIBAVFORMAT REQUIRED IMPORTED_TARGET libavformat)
@@ -39,6 +40,7 @@ target_link_libraries(
         PkgConfig::LIBAVCODEC
         PkgConfig::LIBAVFORMAT
         PkgConfig::LIBAVUTIL
+        Threads::Threads
 )
 
 include(CTest)
@@ -98,8 +100,6 @@ if(BUILD_TESTING)
             tests/encoded_video_buffer_tests.cpp
             src/buffers/EncodedVideoBuffer.cpp
             src/ffmpeg/AvPacket.cpp
-            src/ffmpeg/AvCodecParameters.cpp
-            src/ffmpeg/VideoStreamParameters.cpp
     )
 
     target_include_directories(
@@ -109,7 +109,9 @@ if(BUILD_TESTING)
 
     target_link_libraries(
             encoded_video_buffer_tests
-            PRIVATE PkgConfig::LIBAVCODEC
+            PRIVATE
+            PkgConfig::LIBAVCODEC
+            Threads::Threads
     )
 
     add_test(NAME encoded_video_buffer_tests COMMAND encoded_video_buffer_tests)
@@ -172,30 +174,11 @@ if(BUILD_TESTING)
     add_test(NAME video_stream_parameters_tests COMMAND video_stream_parameters_tests)
 
     add_executable(
-            encoded_video_packets_tests
-            tests/encoded_video_packets_tests.cpp
-            src/ffmpeg/AvPacket.cpp
-            src/ffmpeg/AvCodecParameters.cpp
-            src/ffmpeg/VideoStreamParameters.cpp
-    )
-
-    target_include_directories(
-            encoded_video_packets_tests
-            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-
-    target_link_libraries(
-            encoded_video_packets_tests
-            PRIVATE PkgConfig::LIBAVCODEC
-    )
-
-    add_test(NAME encoded_video_packets_tests COMMAND encoded_video_packets_tests)
-
-    add_executable(
             ffmpeg_video_stream_parameters_tests
             tests/ffmpeg_video_stream_parameters_tests.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/FfmpegEncodedVideoSource.cpp
+            src/buffers/EncodedVideoBuffer.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/AvCodecParameters.cpp
             src/ffmpeg/VideoStreamParameters.cpp
@@ -220,6 +203,7 @@ if(BUILD_TESTING)
             tests/ffmpeg_encoded_video_packets_tests.cpp
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/FfmpegEncodedVideoSource.cpp
+            src/buffers/EncodedVideoBuffer.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/AvCodecParameters.cpp
             src/ffmpeg/VideoStreamParameters.cpp
@@ -245,6 +229,7 @@ if(BUILD_TESTING)
             src/ffmpeg/AvBitstreamFilter.cpp
             src/input/VideoStreamReader.cpp
             src/input/FfmpegEncodedVideoSource.cpp
+            src/buffers/EncodedVideoBuffer.cpp
             src/ffmpeg/AvPacket.cpp
             src/ffmpeg/AvCodecParameters.cpp
             src/ffmpeg/VideoStreamParameters.cpp

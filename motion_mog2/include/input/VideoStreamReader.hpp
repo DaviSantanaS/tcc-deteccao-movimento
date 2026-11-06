@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <opencv2/cudacodec.hpp>
@@ -10,8 +9,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
+class EncodedVideoBuffer;
 class FfmpegEncodedVideoSource;
 
 struct DecodedFrame {
@@ -21,14 +20,15 @@ struct DecodedFrame {
 
 class VideoStreamReader {
 public:
-    explicit VideoStreamReader(const std::string& input_source);
+    // Os pacotes codificados nao passam pelo reader: a fonte FFmpeg os guarda
+    // diretamente em encoded_video_buffer, e o main os retira de la.
+    VideoStreamReader(
+        const std::string& input_source,
+        std::shared_ptr<EncodedVideoBuffer> encoded_video_buffer
+    );
 
     [[nodiscard]]
-    bool read(
-        DecodedFrame& decoded_frame,
-        std::vector<AvPacketPtr>& encoded_packets,
-        cv::cuda::Stream& cuda_stream
-    );
+    bool read(DecodedFrame& decoded_frame, cv::cuda::Stream& cuda_stream);
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
 

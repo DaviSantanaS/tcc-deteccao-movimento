@@ -1,3 +1,4 @@
+#include "buffers/EncodedVideoBuffer.hpp"
 #include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <array>
@@ -7,6 +8,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -26,7 +28,7 @@ int main(int argument_count, char** argument_values) {
         std::vector<std::uint8_t> original_codec_extra_data;
 
         {
-            FfmpegEncodedVideoSource video_source(argument_values[1]);
+            FfmpegEncodedVideoSource video_source(argument_values[1], std::make_shared<EncodedVideoBuffer>());
             const auto first_video_stream_parameters = video_source.getVideoStreamParameters();
             const auto second_video_stream_parameters = video_source.getVideoStreamParameters();
             if (!first_video_stream_parameters ||

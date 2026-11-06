@@ -4,6 +4,7 @@
 #include "input/VideoStreamReader.hpp"
 
 #include <opencv2/core/cuda.hpp>
+#include <opencv2/highgui.hpp>
 
 #include <algorithm>
 #include <array>
@@ -16,11 +17,11 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
 
 std::atomic<bool> capture_active{true};
 
@@ -31,10 +32,11 @@ void handleTerminationSignal(int) {
 int main(int argument_count, char** argument_values) {
     const bool help_requested = argument_count == 2 &&
         (std::string(argument_values[1]) == "--help" || std::string(argument_values[1]) == "-h");
-    if (help_requested || argument_count > 4) {
-        std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [pacotes_por_trecho]\n"
+    if (help_requested || argument_count > 5) {
+        std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [pacotes_por_trecho] [--sem-video]\n"
                      "Padrao: rtsp://127.0.0.1:8554/video ./recordings 1000\n"
-                     "O corte ocorre no proximo keyframe apos atingir o alvo de pacotes.\n";
+                     "O corte ocorre no proximo keyframe apos atingir o alvo de pacotes.\n"
+                     "--sem-video desativa a janela com o video decodificado (Esc ou q encerram).\n";
         return help_requested ? 0 : 1;
     }
 
@@ -58,6 +60,10 @@ int main(int argument_count, char** argument_values) {
             throw std::invalid_argument("O alvo de pacotes deve caber em size_t e ser maior que zero.");
         }
         const auto target_recording_packet_count = static_cast<std::size_t>(parsed_packet_count);
+        if (argument_count > 4 && std::string(argument_values[4]) != "--sem-video") {
+            throw std::invalid_argument("O quarto argumento, se presente, deve ser --sem-video.");
+        }
+        const bool preview_enabled = argument_count <= 4;
 
         if (cv::cuda::getCudaEnabledDeviceCount() <= 0) {
             std::cerr << "[fatal] Nenhuma GPU CUDA visível.\n";
@@ -65,12 +71,14 @@ int main(int argument_count, char** argument_values) {
         }
         cv::cuda::setDevice(0);
 
-        VideoStreamReader video_reader(input_source);
+        // Compartilhado com a fonte FFmpeg, que o usa na thread interna do OpenCV
+        // enquanto o VideoReader existir.
+        const auto encoded_video_buffer = std::make_shared<EncodedVideoBuffer>();
+        VideoStreamReader video_reader(input_source, encoded_video_buffer);
         const auto video_stream_parameters = video_reader.getVideoStreamParameters();
         if (!video_stream_parameters) {
             throw std::invalid_argument("Os parametros da stream devem estar disponiveis apos construir o reader.");
         }
-        EncodedVideoBuffer encoded_video_buffer(target_recording_packet_count);
         std::filesystem::create_directories(output_directory);
 
         std::cout << "STREAM_FPS fps=" << video_reader.getFramesPerSecond() << "\n";
@@ -82,136 +90,148 @@ int main(int argument_count, char** argument_values) {
 
         cv::cuda::Stream cuda_stream;
         DecodedFrame decoded_frame;
-        std::vector<AvPacketPtr> pending_encoded_packets;
 
         AvOutputFileContextPtr output_io_context;
         AvMp4OutputContextPtr mp4_output_context;
         std::filesystem::path current_output_file_path;
-        std::size_t recording_read_count = 0;
         std::size_t recording_encoded_packet_count = 0;
         std::size_t skipped_initial_packet_count = 0;
         std::size_t completed_recording_count = 0;
         bool next_keyframe_boundary_pending = false;
 
-        const auto encoded_packet_writer = [&](std::vector<AvPacketPtr>&& encoded_packets_for_output) {
-            writeMp4Packets(*mp4_output_context, std::move(encoded_packets_for_output), video_stream_parameters);
+        const auto recording_starter = [&]() {
+            const std::time_t recording_start_time = std::chrono::system_clock::to_time_t(
+                std::chrono::system_clock::now()
+            );
+            std::tm local_recording_start{};
+            if (!localtime_r(&recording_start_time, &local_recording_start)) {
+                throw std::runtime_error("Nao foi possivel obter o horario local da gravacao.");
+            }
+            constexpr std::array<const char*, 12> portuguese_month_names{
+                "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"
+            };
+            std::ostringstream recording_file_name;
+            recording_file_name << std::put_time(&local_recording_start, "%d_")
+                                << portuguese_month_names.at(local_recording_start.tm_mon)
+                                << std::put_time(&local_recording_start, "_%y_%H.%M.%S");
+            const std::string recording_file_stem = recording_file_name.str();
+            current_output_file_path = output_directory / (recording_file_stem + ".mp4");
+            for (std::size_t suffix = 1;
+                 std::filesystem::symlink_status(current_output_file_path).type() != std::filesystem::file_type::not_found;
+                 ++suffix) {
+                std::ostringstream unique_file_name;
+                unique_file_name << recording_file_stem << '_' << std::setfill('0') << std::setw(3)
+                                 << suffix << ".mp4";
+                current_output_file_path = output_directory / unique_file_name.str();
+            }
+
+            mp4_output_context = allocateMp4OutputContext();
+            mp4_output_context->avoid_negative_ts = AVFMT_AVOID_NEG_TS_MAKE_ZERO;
+            (void)createMp4VideoStream(*mp4_output_context, *video_stream_parameters);
+            output_io_context = openOutputFile(current_output_file_path);
+            writeMp4Header(*mp4_output_context, output_io_context);
+            recording_encoded_packet_count = 0;
+            next_keyframe_boundary_pending = false;
+            std::cout << "MP4_STARTED path=" << current_output_file_path << "\n";
+            std::cout.flush();
         };
         const auto recording_finalizer = [&]() {
-            writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedEncodedPackets(), video_stream_parameters);
             writeMp4Trailer(*mp4_output_context);
             mp4_output_context.reset();
             output_io_context.reset();
             ++completed_recording_count;
             std::cout << "MP4_SAVED path=" << current_output_file_path
-                      << " decoded_reads=" << recording_read_count
                       << " encoded_packets=" << recording_encoded_packet_count << "\n";
             std::cout.flush();
         };
 
-        while (::capture_active || !pending_encoded_packets.empty()) {
-            const bool new_decoded_frame_required = pending_encoded_packets.empty();
-            if (new_decoded_frame_required) {
-                if (!video_reader.read(decoded_frame, pending_encoded_packets, cuda_stream)) {
-                    break;
-                }
-                cuda_stream.waitForCompletion();
-            }
-
-            for (const auto& packet : pending_encoded_packets) {
-                if (!packet) {
-                    throw std::invalid_argument("A leitura retornou um AVPacket nulo.");
-                }
-            }
-
-            if (!mp4_output_context || next_keyframe_boundary_pending) {
-                auto next_keyframe = std::find_if(
-                    pending_encoded_packets.begin(),
-                    pending_encoded_packets.end(),
-                    [](const AvPacketPtr& packet) { return (packet->flags & AV_PKT_FLAG_KEY) != 0; }
-                );
-                if (!mp4_output_context && next_keyframe == pending_encoded_packets.end()) {
-                    skipped_initial_packet_count += pending_encoded_packets.size();
-                    pending_encoded_packets.clear();
-                    continue;
-                }
-                if (next_keyframe != pending_encoded_packets.end()) {
-                    if (mp4_output_context) {
-                        std::vector<AvPacketPtr> packets_before_keyframe;
-                        for (auto packet = pending_encoded_packets.begin(); packet != next_keyframe; ++packet) {
-                            packets_before_keyframe.push_back(std::move(*packet));
-                        }
-                        recording_encoded_packet_count += packets_before_keyframe.size();
-                        encoded_packet_writer(std::move(packets_before_keyframe));
-                        recording_finalizer();
-                    } else {
-                        skipped_initial_packet_count += static_cast<std::size_t>(
-                            next_keyframe - pending_encoded_packets.begin()
-                        );
-                    }
-                    pending_encoded_packets.erase(
-                        pending_encoded_packets.begin(), next_keyframe
-                    );
-                }
-            }
-
+        // Politica de gravacao aplicada a um pacote por vez, na ordem de chegada.
+        // Cada MP4 comeca em keyframe; ao atingir o alvo, o corte espera o proximo keyframe.
+        const auto encoded_packet_recorder = [&](AvPacketPtr encoded_packet) {
+            const bool keyframe_packet = (encoded_packet->flags & AV_PKT_FLAG_KEY) != 0;
             if (!mp4_output_context) {
-                const std::time_t recording_start_time = std::chrono::system_clock::to_time_t(
-                    std::chrono::system_clock::now()
-                );
-                std::tm local_recording_start{};
-                if (!localtime_r(&recording_start_time, &local_recording_start)) {
-                    throw std::runtime_error("Nao foi possivel obter o horario local da gravacao.");
+                if (!keyframe_packet) {
+                    ++skipped_initial_packet_count;
+                    return;
                 }
-                constexpr std::array<const char*, 12> portuguese_month_names{
-                    "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"
-                };
-                std::ostringstream recording_file_name;
-                recording_file_name << std::put_time(&local_recording_start, "%d_")
-                                    << portuguese_month_names.at(local_recording_start.tm_mon)
-                                    << std::put_time(&local_recording_start, "_%y_%H.%M.%S");
-                const std::string recording_file_stem = recording_file_name.str();
-                current_output_file_path = output_directory / (recording_file_stem + ".mp4");
-                for (std::size_t suffix = 1;
-                     std::filesystem::symlink_status(current_output_file_path).type() != std::filesystem::file_type::not_found;
-                     ++suffix) {
-                    std::ostringstream unique_file_name;
-                    unique_file_name << recording_file_stem << '_' << std::setfill('0') << std::setw(3)
-                                     << suffix << ".mp4";
-                    current_output_file_path = output_directory / unique_file_name.str();
-                }
-
-                mp4_output_context = allocateMp4OutputContext();
-                mp4_output_context->avoid_negative_ts = AVFMT_AVOID_NEG_TS_MAKE_ZERO;
-                (void)createMp4VideoStream(*mp4_output_context, *video_stream_parameters);
-                output_io_context = openOutputFile(current_output_file_path);
-                writeMp4Header(*mp4_output_context, output_io_context);
-                recording_read_count = 0;
-                recording_encoded_packet_count = 0;
-                next_keyframe_boundary_pending = false;
-                std::cout << "MP4_STARTED path=" << current_output_file_path << "\n";
-                std::cout.flush();
+                recording_starter();
+            } else if (next_keyframe_boundary_pending && keyframe_packet) {
+                recording_finalizer();
+                recording_starter();
             }
 
-            if (new_decoded_frame_required) {
-                ++recording_read_count;
+            // O muxer MP4 pode ajustar a base de tempo da stream em writeMp4Header.
+            const AVStream& mp4_video_stream = *mp4_output_context->streams[0];
+            prepareEncodedPacketForOutput(
+                *encoded_packet,
+                video_stream_parameters->packet_timestamp_time_base,
+                mp4_video_stream.time_base,
+                mp4_video_stream.index
+            );
+            writeMp4Packet(*mp4_output_context, *encoded_packet);
+
+            ++recording_encoded_packet_count;
+            if (recording_encoded_packet_count >= target_recording_packet_count) {
+                next_keyframe_boundary_pending = true;
             }
-            if (next_keyframe_boundary_pending) {
-                recording_encoded_packet_count += pending_encoded_packets.size();
-                encoded_packet_writer(std::move(pending_encoded_packets));
-                pending_encoded_packets.clear();
+        };
+        const auto buffered_packets_recorder = [&]() {
+            for (AvPacketPtr encoded_packet = encoded_video_buffer->tryPopPacket();
+                 encoded_packet;
+                 encoded_packet = encoded_video_buffer->tryPopPacket()) {
+                encoded_packet_recorder(std::move(encoded_packet));
+            }
+        };
+
+        // Exibe o mesmo frame decodificado pelo NVDEC, sem segunda conexao RTSP.
+        // Com OpenGL, imshow aceita GpuMat direto; sem OpenGL, o frame e copiado para a CPU.
+        const std::string preview_window_name = "TCC - RTSP e gravacao MP4";
+        bool preview_uses_opengl = false;
+        cv::Mat decoded_frame_cpu;
+        if (preview_enabled) {
+            try {
+                cv::namedWindow(preview_window_name, cv::WINDOW_OPENGL | cv::WINDOW_AUTOSIZE);
+                preview_uses_opengl = true;
+            } catch (const cv::Exception& error) {
+                std::cerr << "[aviso] Janela sem OpenGL; o frame sera copiado da GPU para a CPU: "
+                          << error.err << "\n";
+                cv::namedWindow(preview_window_name, cv::WINDOW_AUTOSIZE);
+            }
+            std::cout << "PREVIEW opengl=" << (preview_uses_opengl ? 1 : 0) << "\n";
+            std::cout.flush();
+        }
+        const auto decoded_frame_presenter = [&]() {
+            if (preview_uses_opengl) {
+                cv::imshow(preview_window_name, decoded_frame.decoded_frame_gpu);
             } else {
-                const std::size_t pending_packet_count = pending_encoded_packets.size();
-                encoded_video_buffer.appendPackets(pending_encoded_packets);
-                recording_encoded_packet_count += pending_packet_count - pending_encoded_packets.size();
-                if (encoded_video_buffer.checkIfFull()) {
-                    writeMp4Packets(*mp4_output_context, encoded_video_buffer.takeBufferedEncodedPackets(), video_stream_parameters);
-                    next_keyframe_boundary_pending = true;
-                }
+                decoded_frame.decoded_frame_gpu.download(decoded_frame_cpu);
+                cv::imshow(preview_window_name, decoded_frame_cpu);
             }
+            const int pressed_key = cv::waitKey(1);
+            if (pressed_key == 27 || pressed_key == 'q') {
+                ::capture_active = false;
+            }
+        };
+
+        while (::capture_active) {
+            if (!video_reader.read(decoded_frame, cuda_stream)) {
+                break;
+            }
+            cuda_stream.waitForCompletion();
+
+            if (preview_enabled) {
+                decoded_frame_presenter();
+            }
+            buffered_packets_recorder();
         }
 
+        // Pacotes lidos pela fonte depois do ultimo frame entregue ainda estao no buffer.
+        buffered_packets_recorder();
         if (mp4_output_context) {
             recording_finalizer();
+        }
+        if (preview_enabled) {
+            cv::destroyWindow(preview_window_name);
         }
         std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.getDecodedFrameCount()
                   << " saved_files=" << completed_recording_count
