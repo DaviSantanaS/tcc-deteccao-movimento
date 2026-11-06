@@ -6,6 +6,7 @@
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/core/cuda.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,7 +23,8 @@ class VideoStreamReader {
 public:
     explicit VideoStreamReader(
         const std::string& input_source,
-        const std::string& rtsp_transport = "tcp"
+        const std::string& rtsp_transport = "tcp",
+        const std::atomic<bool>* keep_running = nullptr
     );
 
     [[nodiscard]]
@@ -30,6 +32,8 @@ public:
         DecodedFrame& decoded_frame,
         cv::cuda::Stream& cuda_stream
     );
+
+    void stopDecoding();
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
     EncodedPacketQueue& getEncodedPacketQueue();

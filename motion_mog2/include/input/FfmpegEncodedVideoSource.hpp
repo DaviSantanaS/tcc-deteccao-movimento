@@ -12,6 +12,7 @@ extern "C" {
 
 #include <opencv2/cudacodec.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -21,7 +22,8 @@ class FfmpegEncodedVideoSource : public cv::cudacodec::RawVideoSource {
 public:
     explicit FfmpegEncodedVideoSource(
         const std::string& input_source,
-        const std::string& rtsp_transport = "tcp"
+        const std::string& rtsp_transport = "tcp",
+        const std::atomic<bool>* keep_running = nullptr
     );
 
     cv::cudacodec::FormatInfo format() const override;
@@ -57,7 +59,11 @@ private:
     using AvFormatContextPtr =
         std::unique_ptr<AVFormatContext, AvFormatContextDeleter>;
 
-    void openInputAndSelectVideoStream(const std::string& input_source, const std::string& rtsp_transport);
+    void openInputAndSelectVideoStream(
+        const std::string& input_source,
+        const std::string& rtsp_transport,
+        const std::atomic<bool>* keep_running
+    );
     void initializeVideoFormat();
     void copyVideoCodecExtraData();
 

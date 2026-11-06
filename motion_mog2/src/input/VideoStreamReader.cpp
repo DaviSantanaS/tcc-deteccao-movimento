@@ -3,17 +3,22 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
-VideoStreamReader::VideoStreamReader(const std::string& input_source, const std::string& rtsp_transport) {
+VideoStreamReader::VideoStreamReader(
+    const std::string& input_source,
+    const std::string& rtsp_transport,
+    const std::atomic<bool>* keep_running
+) {
     cv::cudacodec::VideoReaderInitParams reader_parameters;
     reader_parameters.allowFrameDrop = false;
     reader_parameters.rawMode = true;
     reader_parameters.udpSource = true;
 
-    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(input_source, rtsp_transport);
+    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(input_source, rtsp_transport, keep_running);
     this->nvdec_video_reader_ = cv::cudacodec::createVideoReader(
         this->ffmpeg_video_source_,
         reader_parameters
@@ -55,6 +60,9 @@ bool VideoStreamReader::read(
     DecodedFrame& decoded_frame,
     cv::cuda::Stream& cuda_stream
 ) {
+    if (!this->nvdec_video_reader_) {
+        throw std::logic_error("Nao e possivel ler apos stopDecoding().");
+    }
     if (!this->nvdec_video_reader_->grab(cuda_stream)) {
         return false;
     }
@@ -82,6 +90,14 @@ bool VideoStreamReader::read(
     decoded_frame.decoded_frame_index = this->next_decoded_frame_index_;
     ++this->next_decoded_frame_index_;
     return true;
+}
+
+void VideoStreamReader::stopDecoding() {
+    // OpenCV 4.10: ~VideoReaderImpl chama endDecode() (video_reader.cpp)
+    // e RawVideoSourceWrapper::stop() espera a thread (video_source.cpp).
+    // Apos reset(), ninguem mais chama pushPacket; a fonte e sua fila continuam
+    // vivas pelo ffmpeg_video_source_ deste reader. Reset vazio e idempotente.
+    this->nvdec_video_reader_.reset();
 }
 
 std::shared_ptr<const VideoStreamParameters>

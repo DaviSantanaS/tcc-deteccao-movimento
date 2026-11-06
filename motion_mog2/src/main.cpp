@@ -67,7 +67,9 @@ std::filesystem::path buildRecordingFilePath(const std::filesystem::path& output
 
 }
 
-// Compartilhada entre o handler de sinal e o laco de captura para encerrar a leitura.
+static_assert(std::atomic<bool>::is_always_lock_free, "O handler de sinal exige atomic<bool> lock-free.");
+// Compartilhada pelo handler, laco e callback FFmpeg. Escrita em atomic<bool>
+// lock-free e segura no handler de sinal; o callback interrompe a leitura bloqueada.
 std::atomic<bool> capture_active{true};
 
 void handleTerminationSignal(int) {
@@ -102,7 +104,7 @@ int main(int argument_count, char** argument_values) {
         if (recording_config.input_source.rfind("rtsp://", 0) == 0) {
             std::cout << "RTSP_TRANSPORT value=" << recording_config.rtsp_transport << std::endl;
         }
-        VideoStreamReader video_reader(recording_config.input_source, recording_config.rtsp_transport);
+        VideoStreamReader video_reader(recording_config.input_source, recording_config.rtsp_transport, &::capture_active);
         Mog2MotionDetector motion_detector(
             video_reader.getWidth(),
             video_reader.getHeight(),
@@ -323,11 +325,40 @@ int main(int argument_count, char** argument_values) {
             }
         }
 
-        // Provisorio ate a spec 06: os pacotes ainda nao contabilizados
-        // permanecem na fila; aqui so terminamos o arquivo que ja esta aberto.
-        if (mp4_output_context) {
-            encoded_packet_writer(video_reader.getEncodedPacketQueue().takeCountedPackets());
-            recording_finalizer();
+        video_reader.stopDecoding();
+        auto remaining_encoded_packets = video_reader.getEncodedPacketQueue().takeAllPackets();
+        // Os pacotes a frente da fronteira nao passaram pelo detector, mas
+        // continuam em sequencia com o evento e devem ser preservados no MP4.
+        switch (recording_state) {
+            case RecordingState::recording:
+            case RecordingState::post_event:
+            case RecordingState::closing_at_keyframe: {
+                const std::size_t flushed_packet_count = remaining_encoded_packets.size();
+                encoded_packet_writer(std::move(remaining_encoded_packets));
+                recording_finalizer();
+                std::cout << "SHUTDOWN_FLUSHED packets=" << flushed_packet_count << std::endl;
+                break;
+            }
+            case RecordingState::waiting_keyframe: {
+                const auto first_keyframe = std::find_if(
+                    remaining_encoded_packets.begin(), remaining_encoded_packets.end(),
+                    [](const AvPacketPtr& encoded_packet) { return (encoded_packet->flags & AV_PKT_FLAG_KEY) != 0; }
+                );
+                remaining_encoded_packets.erase(remaining_encoded_packets.begin(), first_keyframe);
+                if (!remaining_encoded_packets.empty()) {
+                    const std::size_t flushed_packet_count = remaining_encoded_packets.size();
+                    recording_opener();
+                    encoded_packet_writer(std::move(remaining_encoded_packets));
+                    recording_finalizer();
+                    std::cout << "SHUTDOWN_FLUSHED packets=" << flushed_packet_count << std::endl;
+                } else {
+                    std::cout << "EVENT_DISCARDED_NO_KEYFRAME" << std::endl;
+                }
+                break;
+            }
+            case RecordingState::idle:
+                std::cout << "SHUTDOWN_DISCARDED_IDLE_PACKETS packets=" << remaining_encoded_packets.size() << std::endl;
+                break;
         }
         std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.getDecodedFrameCount()
                   << " saved_files=" << completed_recording_count << "\n";

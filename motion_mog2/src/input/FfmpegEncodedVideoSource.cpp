@@ -9,6 +9,7 @@ extern "C" {
 #include <libavutil/rational.h>
 }
 
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -16,6 +17,13 @@ extern "C" {
 #include <utility>
 
 namespace {
+
+int interruptInputRead(void* interrupt_context) {
+    const auto* keep_running = static_cast<const std::atomic<bool>*>(interrupt_context);
+    // O handler escreve em atomic<bool> lock-free. Este callback interrompe
+    // av_read_frame para a thread do OpenCV terminar mesmo com a fonte travada.
+    return keep_running != nullptr && !keep_running->load() ? 1 : 0;
+}
 
 std::string getFfmpegErrorMessage(int error_code) {
     char error_buffer[AV_ERROR_MAX_STRING_SIZE] = {};
@@ -33,10 +41,11 @@ void FfmpegEncodedVideoSource::AvFormatContextDeleter::operator()(
 
 FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(
     const std::string& input_source,
-    const std::string& rtsp_transport
+    const std::string& rtsp_transport,
+    const std::atomic<bool>* keep_running
 )
     : current_encoded_packet_(allocateAvPacket()) {
-    this->openInputAndSelectVideoStream(input_source, rtsp_transport);
+    this->openInputAndSelectVideoStream(input_source, rtsp_transport, keep_running);
     this->initializeVideoFormat();
     this->video_stream_parameters_ = std::make_shared<const VideoStreamParameters>(
         *this->encoded_video_stream_->codecpar,
@@ -60,7 +69,8 @@ EncodedPacketQueue& FfmpegEncodedVideoSource::getEncodedPacketQueue() {
 
 void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(
     const std::string& input_source,
-    const std::string& rtsp_transport
+    const std::string& rtsp_transport,
+    const std::atomic<bool>* keep_running
 ) {
     AVDictionary* input_options = nullptr;
     const bool use_rtsp_transport_option = input_source.rfind("rtsp://", 0) == 0 && rtsp_transport != "auto";
@@ -78,7 +88,15 @@ void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(
             );
         }
     }
-    AVFormatContext* opened_input_format_context = nullptr;
+    AVFormatContext* opened_input_format_context = avformat_alloc_context();
+    if (opened_input_format_context == nullptr) {
+        av_dict_free(&input_options);
+        throw std::runtime_error("Nao foi possivel alocar o contexto de entrada FFmpeg.");
+    }
+    opened_input_format_context->interrupt_callback.callback = interruptInputRead;
+    // AVIOInterruptCB usa void*, mas o callback apenas consulta o atomic externo,
+    // que deve continuar vivo ate o fim da leitura e do contexto de entrada.
+    opened_input_format_context->interrupt_callback.opaque = const_cast<std::atomic<bool>*>(keep_running);
     const int input_initialization_status = avformat_open_input(
         &opened_input_format_context,
         input_source.c_str(),
