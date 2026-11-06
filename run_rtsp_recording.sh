@@ -216,7 +216,7 @@ if [[ "${show_preview}" == 1 ]]; then
 fi
 
 printf '\n[4/4] Gravando MP4s por evento; Ctrl+C finaliza o evento atual...\n'
-setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${pre_event_seconds}" \
+setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${pre_event_seconds}" 1.0 2 3 5 "${rtsp_transport}" \
   >"${run_directory}/recording.log" 2>&1 &
 recorder_pid=$!
 tail -n +1 -s 0.2 -f "${run_directory}/recording.log" &

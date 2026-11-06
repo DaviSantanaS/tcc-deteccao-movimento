@@ -19,7 +19,10 @@ extern "C" {
 
 class FfmpegEncodedVideoSource : public cv::cudacodec::RawVideoSource {
 public:
-    explicit FfmpegEncodedVideoSource(const std::string& input_source);
+    explicit FfmpegEncodedVideoSource(
+        const std::string& input_source,
+        const std::string& rtsp_transport = "tcp"
+    );
 
     cv::cudacodec::FormatInfo format() const override;
     void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
@@ -54,7 +57,7 @@ private:
     using AvFormatContextPtr =
         std::unique_ptr<AVFormatContext, AvFormatContextDeleter>;
 
-    void openInputAndSelectVideoStream(const std::string& input_source);
+    void openInputAndSelectVideoStream(const std::string& input_source, const std::string& rtsp_transport);
     void initializeVideoFormat();
     void copyVideoCodecExtraData();
 

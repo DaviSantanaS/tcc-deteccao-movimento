@@ -4,6 +4,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/rational.h>
 }
@@ -30,9 +31,12 @@ void FfmpegEncodedVideoSource::AvFormatContextDeleter::operator()(
     avformat_close_input(&input_context);
 }
 
-FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(const std::string& input_source)
+FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(
+    const std::string& input_source,
+    const std::string& rtsp_transport
+)
     : current_encoded_packet_(allocateAvPacket()) {
-    this->openInputAndSelectVideoStream(input_source);
+    this->openInputAndSelectVideoStream(input_source, rtsp_transport);
     this->initializeVideoFormat();
     this->video_stream_parameters_ = std::make_shared<const VideoStreamParameters>(
         *this->encoded_video_stream_->codecpar,
@@ -54,14 +58,34 @@ EncodedPacketQueue& FfmpegEncodedVideoSource::getEncodedPacketQueue() {
     return this->encoded_packet_queue_;
 }
 
-void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(const std::string& input_source) {
+void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(
+    const std::string& input_source,
+    const std::string& rtsp_transport
+) {
+    AVDictionary* input_options = nullptr;
+    const bool use_rtsp_transport_option = input_source.rfind("rtsp://", 0) == 0 && rtsp_transport != "auto";
+    if (use_rtsp_transport_option) {
+        // FFmpeg 6.1 (rtsp.c, ff_rtsp_connect) tenta UDP primeiro por padrao;
+        // a opcao explicita faz o gravador usar o transporte escolhido.
+        const int option_configuration_status = av_dict_set(
+            &input_options, "rtsp_transport", rtsp_transport.c_str(), 0
+        );
+        if (option_configuration_status < 0) {
+            av_dict_free(&input_options);
+            throw std::runtime_error(
+                "Nao foi possivel configurar o transporte RTSP: " +
+                getFfmpegErrorMessage(option_configuration_status)
+            );
+        }
+    }
     AVFormatContext* opened_input_format_context = nullptr;
     const int input_initialization_status = avformat_open_input(
         &opened_input_format_context,
         input_source.c_str(),
         nullptr,
-        nullptr
+        use_rtsp_transport_option ? &input_options : nullptr
     );
+    av_dict_free(&input_options);
     AvFormatContextPtr input_format_context{opened_input_format_context};
 
     if (input_initialization_status < 0) {

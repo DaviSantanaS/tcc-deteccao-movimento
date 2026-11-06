@@ -51,6 +51,7 @@ int main() {
                     "Tempos padrao incorretos.");
             require(config.motion_threshold_percent == 1.0 && config.motion_start_frame_count == 2 &&
                         config.motion_end_frame_count == 3, "Parametros padrao do detector incorretos.");
+            require(config.rtsp_transport == "tcp", "Transporte RTSP padrao deve ser tcp.");
         }
         std::cout << "PASS: argumentos padrao.\n";
 
@@ -91,6 +92,21 @@ int main() {
             "inicio_frames deve estar entre 1 e " + std::to_string(std::numeric_limits<int>::max()) + "."
         );
         std::cout << "PASS: inicio_frames zero rejeitado.\n";
+
+        for (const std::string transport : {"udp", "auto"}) {
+            const EventRecordingConfig config = parseArguments(
+                {"motion_mog2", "video.mp4", "/tmp/x", "5", "1.0", "2", "3", "5", transport}
+            );
+            require(config.rtsp_transport == transport, "Transporte explicito nao foi preservado.");
+            std::cout << "PASS: rtsp_transporte " << transport << " aceito.\n";
+        }
+        for (const std::string transport : {"TCP", "quic"}) {
+            requireInvalidArguments(
+                {"motion_mog2", "video.mp4", "/tmp/x", "5", "1.0", "2", "3", "5", transport},
+                "rtsp_transporte deve ser tcp, udp ou auto: " + transport
+            );
+            std::cout << "PASS: rtsp_transporte " << transport << " rejeitado.\n";
+        }
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

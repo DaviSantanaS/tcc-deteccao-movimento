@@ -89,6 +89,13 @@ EventRecordingConfig parseEventRecordingArguments(int argument_count, char** arg
         recording_config.post_event_seconds = parsePostEventSeconds(
             argument_count > 7 ? argument_values[7] : "5"
         );
+        recording_config.rtsp_transport = argument_count > 8 ? argument_values[8] : "tcp";
+        if (recording_config.rtsp_transport != "tcp" && recording_config.rtsp_transport != "udp" &&
+            recording_config.rtsp_transport != "auto") {
+            throw std::invalid_argument(
+                "rtsp_transporte deve ser tcp, udp ou auto: " + recording_config.rtsp_transport
+            );
+        }
         return recording_config;
     } catch (const std::invalid_argument&) {
         throw;

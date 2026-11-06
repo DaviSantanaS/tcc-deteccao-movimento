@@ -7,13 +7,13 @@
 #include <cstdint>
 #include <stdexcept>
 
-VideoStreamReader::VideoStreamReader(const std::string& input_source) {
+VideoStreamReader::VideoStreamReader(const std::string& input_source, const std::string& rtsp_transport) {
     cv::cudacodec::VideoReaderInitParams reader_parameters;
     reader_parameters.allowFrameDrop = false;
     reader_parameters.rawMode = true;
     reader_parameters.udpSource = true;
 
-    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(input_source);
+    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(input_source, rtsp_transport);
     this->nvdec_video_reader_ = cv::cudacodec::createVideoReader(
         this->ffmpeg_video_source_,
         reader_parameters

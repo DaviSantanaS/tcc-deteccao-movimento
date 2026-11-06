@@ -77,9 +77,10 @@ void handleTerminationSignal(int) {
 int main(int argument_count, char** argument_values) {
     const bool help_requested = argument_count == 2 &&
         (std::string(argument_values[1]) == "--help" || std::string(argument_values[1]) == "-h");
-    if (help_requested || argument_count > 8) {
-        std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [pre_evento_s] [limiar_%] [inicio_frames] [fim_frames] [pos_evento_s]\n"
-                     "Padrao: rtsp://127.0.0.1:8554/video ./recordings 5 1.0 2 3 5\n"
+    if (help_requested || argument_count > 9) {
+        std::cout << "Uso: motion_mog2 [fonte] [diretorio_saida] [pre_evento_s] [limiar_%] [inicio_frames] [fim_frames] [pos_evento_s] [rtsp_transporte]\n"
+                     "Padrao: rtsp://127.0.0.1:8554/video ./recordings 5 1.0 2 3 5 tcp\n"
+                     "rtsp_transporte: tcp, udp ou auto; ignorado para arquivo local.\n"
                      "A gravacao por evento comeca em keyframe e inclui o pre-evento disponivel.\n";
         return help_requested ? 0 : 1;
     }
@@ -98,7 +99,10 @@ int main(int argument_count, char** argument_values) {
         }
         cv::cuda::setDevice(0);
 
-        VideoStreamReader video_reader(recording_config.input_source);
+        if (recording_config.input_source.rfind("rtsp://", 0) == 0) {
+            std::cout << "RTSP_TRANSPORT value=" << recording_config.rtsp_transport << std::endl;
+        }
+        VideoStreamReader video_reader(recording_config.input_source, recording_config.rtsp_transport);
         Mog2MotionDetector motion_detector(
             video_reader.getWidth(),
             video_reader.getHeight(),

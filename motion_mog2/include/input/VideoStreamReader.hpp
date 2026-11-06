@@ -20,7 +20,10 @@ struct DecodedFrame {
 
 class VideoStreamReader {
 public:
-    explicit VideoStreamReader(const std::string& input_source);
+    explicit VideoStreamReader(
+        const std::string& input_source,
+        const std::string& rtsp_transport = "tcp"
+    );
 
     [[nodiscard]]
     bool read(
