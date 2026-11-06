@@ -2,14 +2,12 @@
 
 #include "ffmpeg/AvOutputFileContext.hpp"
 #include "ffmpeg/AvPacket.hpp"
-#include "ffmpeg/EncodedVideoPackets.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
 }
 
 #include <memory>
-#include <vector>
 
 struct VideoStreamParameters;
 
@@ -35,17 +33,6 @@ void writeMp4Header(
 void writeMp4Packet(
     AVFormatContext& mp4_output_context,
     AVPacket& encoded_packet
-);
-
-void writeMp4Packets(
-    AVFormatContext& mp4_output_context,
-    std::vector<EncodedVideoPackets> encoded_packet_batches
-);
-
-void writeMp4Packets(
-    AVFormatContext& mp4_output_context,
-    std::vector<AvPacketPtr> encoded_packets,
-    std::shared_ptr<const VideoStreamParameters> video_stream_parameters
 );
 
 void writeMp4Trailer(AVFormatContext& mp4_output_context);

@@ -1,9 +1,13 @@
+#include "buffers/EncodedVideoBuffer.hpp"
 #include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <memory>
+#include <utility>
+#include <vector>
 
 int main(int argument_count, char** argument_values) {
     if (argument_count != 2) {
@@ -12,7 +16,8 @@ int main(int argument_count, char** argument_values) {
     }
 
     try {
-        FfmpegEncodedVideoSource valid_source(argument_values[1]);
+        const auto encoded_video_buffer = std::make_shared<EncodedVideoBuffer>();
+        FfmpegEncodedVideoSource valid_source(argument_values[1], encoded_video_buffer);
         if (valid_source.format().codec != cv::cudacodec::Codec::H264) {
             std::cerr << "O codec da entrada valida nao foi identificado como H.264.\n";
             return 1;
@@ -88,8 +93,12 @@ int main(int argument_count, char** argument_values) {
             std::cout << "decoder packet size=" << encoded_packet_byte_count << '\n';
         }
 
-        std::vector<AvPacketPtr> pending_packets =
-            valid_source.dequeueEncodedPackets(3);
+        std::vector<AvPacketPtr> pending_packets;
+        for (AvPacketPtr buffered_packet = encoded_video_buffer->tryPopPacket();
+             buffered_packet;
+             buffered_packet = encoded_video_buffer->tryPopPacket()) {
+            pending_packets.push_back(std::move(buffered_packet));
+        }
         if (pending_packets.size() != 3) {
             std::cerr << "A quantidade de pacotes pendentes esta incorreta.\n";
             return 1;
@@ -112,11 +121,9 @@ int main(int argument_count, char** argument_values) {
             return 1;
         }
 
-        try {
-            valid_source.dequeueEncodedPackets(1);
-            std::cerr << "A fila vazia aceitou a retirada de outro pacote.\n";
+        if (encoded_video_buffer->tryPopPacket() != nullptr) {
+            std::cerr << "O buffer deveria estar vazio apos retirar os tres pacotes.\n";
             return 1;
-        } catch (const std::runtime_error&) {
         }
     } catch (const std::exception& error) {
         std::cerr << "Falha ao abrir a entrada valida: " << error.what() << "\n";
@@ -125,7 +132,8 @@ int main(int argument_count, char** argument_values) {
 
     try {
         FfmpegEncodedVideoSource invalid_source(
-            "/tmp/tcc-entrada-de-video-inexistente.mp4"
+            "/tmp/tcc-entrada-de-video-inexistente.mp4",
+            std::make_shared<EncodedVideoBuffer>()
         );
     } catch (const std::exception&) {
         return 0;

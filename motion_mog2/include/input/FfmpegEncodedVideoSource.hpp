@@ -1,8 +1,8 @@
 #pragma once
 
+#include "buffers/EncodedVideoBuffer.hpp"
 #include "ffmpeg/AvBitstreamFilter.hpp"
 #include "ffmpeg/AvPacket.hpp"
-#include "ffmpeg/EncodedVideoPackets.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
 extern "C" {
@@ -12,15 +12,17 @@ extern "C" {
 #include <opencv2/cudacodec.hpp>
 
 #include <cstddef>
-#include <deque>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <vector>
 
 class FfmpegEncodedVideoSource : public cv::cudacodec::RawVideoSource {
 public:
-    explicit FfmpegEncodedVideoSource(const std::string& input_source);
+    // O buffer e compartilhado com o main: getNextPacket roda na thread interna
+    // do OpenCV e guarda nele um clone de cada AVPacket original lido.
+    FfmpegEncodedVideoSource(
+        const std::string& input_source,
+        std::shared_ptr<EncodedVideoBuffer> encoded_video_buffer
+    );
 
     cv::cudacodec::FormatInfo format() const override;
     void updateFormat(const cv::cudacodec::FormatInfo& updated_video_format) override;
@@ -32,12 +34,6 @@ public:
     bool lastPacketContainsKeyFrame() const override;
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
-
-    [[nodiscard]]
-    std::vector<AvPacketPtr> dequeueEncodedPackets(std::size_t packet_count);
-
-    [[nodiscard]]
-    EncodedVideoPackets dequeueEncodedPacketsWithStreamParameters(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
 
@@ -67,7 +63,5 @@ private:
     cv::Mat video_codec_extra_data_;
     std::shared_ptr<const VideoStreamParameters> video_stream_parameters_;
     AvBitstreamFilterPtr annex_b_filter_for_nvdec_;
-
-    std::mutex encoded_packets_queue_mutex_;
-    std::deque<AvPacketPtr> encoded_packets_queue_;
+    std::shared_ptr<EncodedVideoBuffer> encoded_video_buffer_;
 };

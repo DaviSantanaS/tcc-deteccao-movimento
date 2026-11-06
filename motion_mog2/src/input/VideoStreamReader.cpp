@@ -6,14 +6,22 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <utility>
 
-VideoStreamReader::VideoStreamReader(const std::string& input_source) {
+VideoStreamReader::VideoStreamReader(
+    const std::string& input_source,
+    std::shared_ptr<EncodedVideoBuffer> encoded_video_buffer
+) {
     cv::cudacodec::VideoReaderInitParams reader_parameters;
     reader_parameters.allowFrameDrop = false;
-    reader_parameters.rawMode = true;
+    // Sem modo raw: os pacotes originais ja sao preservados pela fonte no
+    // EncodedVideoBuffer, entao a fila raw interna do OpenCV seria uma copia extra.
+    reader_parameters.rawMode = false;
     reader_parameters.udpSource = true;
 
-    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(input_source);
+    this->ffmpeg_video_source_ = cv::makePtr<FfmpegEncodedVideoSource>(
+        input_source, std::move(encoded_video_buffer)
+    );
     this->nvdec_video_reader_ = cv::cudacodec::createVideoReader(
         this->ffmpeg_video_source_,
         reader_parameters
@@ -51,11 +59,7 @@ VideoStreamReader::VideoStreamReader(const std::string& input_source) {
         static_cast<std::size_t>(decoded_frame_retrieval_index_value);
 }
 
-bool VideoStreamReader::read(
-    DecodedFrame& decoded_frame,
-    std::vector<AvPacketPtr>& encoded_packets,
-    cv::cuda::Stream& cuda_stream
-) {
+bool VideoStreamReader::read(DecodedFrame& decoded_frame, cv::cuda::Stream& cuda_stream) {
     if (!this->nvdec_video_reader_->grab(cuda_stream)) {
         return false;
     }
@@ -66,20 +70,6 @@ bool VideoStreamReader::read(
         decoded_frame.decoded_frame_gpu.empty()) {
         throw std::runtime_error("Frame decodificado nao foi recuperado.");
     }
-
-    double encoded_packet_count_value = 0.0;
-    if (!this->nvdec_video_reader_->get(
-            cv::cudacodec::VideoReaderProps::PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB,
-            encoded_packet_count_value)) {
-        throw std::runtime_error(
-            "Nao foi possivel obter a quantidade de pacotes codificados."
-        );
-    }
-
-    const std::size_t encoded_packet_count =
-        static_cast<std::size_t>(encoded_packet_count_value);
-    encoded_packets =
-        this->ffmpeg_video_source_->dequeueEncodedPackets(encoded_packet_count);
 
     decoded_frame.decoded_frame_index = this->next_decoded_frame_index_;
     ++this->next_decoded_frame_index_;

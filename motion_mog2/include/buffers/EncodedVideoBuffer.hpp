@@ -3,23 +3,26 @@
 #include "ffmpeg/AvPacket.hpp"
 
 #include <cstddef>
-#include <vector>
+#include <deque>
+#include <mutex>
 
+// Unica fila de pacotes codificados do projeto. Recebe os clones dos
+// AVPacket originais na thread interna do OpenCV (getNextPacket) e os
+// entrega, em ordem FIFO, a thread do main, que os grava no MP4.
 class EncodedVideoBuffer {
 public:
-    explicit EncodedVideoBuffer(std::size_t max_buffered_packet_count = 1000);
+    // Chamado pela thread interna do OpenCV, dentro de getNextPacket.
+    void pushPacket(AvPacketPtr encoded_packet);
 
-    void appendPackets(std::vector<AvPacketPtr>& pending_encoded_packets);
+    // Chamado pela thread do main. Devolve nullptr quando o buffer esta vazio.
+    [[nodiscard]]
+    AvPacketPtr tryPopPacket();
 
     [[nodiscard]]
-    bool checkIfFull() const {
-        return this->encoded_packets_buffer_.size() == this->max_buffered_packet_count_;
-    }
-
-    [[nodiscard]]
-    std::vector<AvPacketPtr> takeBufferedEncodedPackets();
+    std::size_t getPacketCount() const;
 
 private:
-    std::size_t max_buffered_packet_count_;
-    std::vector<AvPacketPtr> encoded_packets_buffer_;
+    // Protege a fila: o produtor e o consumidor rodam em threads diferentes.
+    mutable std::mutex encoded_packets_mutex_;
+    std::deque<AvPacketPtr> encoded_packets_;
 };

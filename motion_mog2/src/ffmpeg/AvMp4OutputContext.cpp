@@ -6,7 +6,6 @@
 #include <new>
 #include <stdexcept>
 #include <string>
-#include <utility>
 
 extern "C" {
 #include <libavutil/avutil.h>
@@ -172,83 +171,6 @@ void writeMp4Packet(
             "O I/O falhou ao escrever o pacote MP4: erro " + std::to_string(mp4_output_context.pb->error)
         );
     }
-}
-
-void writeMp4Packets(
-    AVFormatContext& mp4_output_context,
-    std::vector<EncodedVideoPackets> encoded_packet_batches
-) {
-    if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
-        std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||
-        mp4_output_context.iformat != nullptr || mp4_output_context.nb_streams != 1 ||
-        !mp4_output_context.streams || !mp4_output_context.streams[0] ||
-        !mp4_output_context.pb || !mp4_output_context.pb->write_flag ||
-        !(mp4_output_context.pb->seekable & AVIO_SEEKABLE_NORMAL) ||
-        mp4_output_context.pb->error < 0) {
-        throw std::invalid_argument("A saida deve ser MP4 com uma stream e I/O de escrita com seek e sem erro anterior.");
-    }
-    const AVStream& video_output_stream = *mp4_output_context.streams[0];
-    if (!video_output_stream.codecpar ||
-        video_output_stream.codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
-        video_output_stream.codecpar->codec_id != AV_CODEC_ID_H264 ||
-        video_output_stream.time_base.num <= 0 || video_output_stream.time_base.den <= 0) {
-        throw std::invalid_argument("A stream de saida deve ser video H.264 com base de tempo positiva.");
-    }
-
-    const VideoStreamParameters* shared_source_parameters = nullptr;
-    for (const auto& encoded_packet_batch : encoded_packet_batches) {
-        if (encoded_packet_batch.encoded_packets.empty()) {
-            continue;
-        }
-        const auto& source_parameters = encoded_packet_batch.video_stream_parameters;
-        if (!source_parameters || !source_parameters->codec_parameters ||
-            source_parameters->codec_parameters->codec_type != AVMEDIA_TYPE_VIDEO ||
-            source_parameters->codec_parameters->codec_id != AV_CODEC_ID_H264 ||
-            source_parameters->packet_timestamp_time_base.num <= 0 ||
-            source_parameters->packet_timestamp_time_base.den <= 0) {
-            throw std::invalid_argument("Os pacotes devem ter parametros H.264 e base de tempo original positiva.");
-        }
-        if (shared_source_parameters && shared_source_parameters != source_parameters.get()) {
-            throw std::invalid_argument("As leituras com pacotes devem compartilhar a mesma instancia dos parametros da fonte.");
-        }
-        shared_source_parameters = source_parameters.get();
-        for (const auto& encoded_packet : encoded_packet_batch.encoded_packets) {
-            if (!encoded_packet || !encoded_packet->buf || !encoded_packet->data || encoded_packet->size <= 0 ||
-                encoded_packet->pts == AV_NOPTS_VALUE || encoded_packet->dts == AV_NOPTS_VALUE ||
-                encoded_packet->duration < 0 || encoded_packet->time_base.num <= 0 ||
-                encoded_packet->time_base.den <= 0 ||
-                av_cmp_q(encoded_packet->time_base, source_parameters->packet_timestamp_time_base) != 0) {
-                throw std::invalid_argument("Cada pacote deve ter dados refcountados e timestamps na base de tempo original.");
-            }
-        }
-    }
-
-    for (const auto& encoded_packet_batch : encoded_packet_batches) {
-        if (encoded_packet_batch.encoded_packets.empty()) {
-            continue;
-        }
-        for (const auto& encoded_packet : encoded_packet_batch.encoded_packets) {
-            prepareEncodedPacketForOutput(
-                *encoded_packet, encoded_packet_batch.video_stream_parameters->packet_timestamp_time_base,
-                video_output_stream.time_base, video_output_stream.index
-            );
-            writeMp4Packet(mp4_output_context, *encoded_packet);
-        }
-    }
-}
-
-void writeMp4Packets(
-    AVFormatContext& mp4_output_context,
-    std::vector<AvPacketPtr> encoded_packets,
-    std::shared_ptr<const VideoStreamParameters> video_stream_parameters
-) {
-    EncodedVideoPackets packet_batch{
-        std::move(encoded_packets),
-        std::move(video_stream_parameters)
-    };
-    std::vector<EncodedVideoPackets> encoded_packet_batches;
-    encoded_packet_batches.push_back(std::move(packet_batch));
-    writeMp4Packets(mp4_output_context, std::move(encoded_packet_batches));
 }
 
 void writeMp4Trailer(AVFormatContext& mp4_output_context) {

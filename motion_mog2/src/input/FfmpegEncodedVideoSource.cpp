@@ -30,8 +30,15 @@ void FfmpegEncodedVideoSource::AvFormatContextDeleter::operator()(
     avformat_close_input(&input_context);
 }
 
-FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(const std::string& input_source)
-    : current_encoded_packet_(allocateAvPacket()) {
+FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(
+    const std::string& input_source,
+    std::shared_ptr<EncodedVideoBuffer> encoded_video_buffer
+)
+    : current_encoded_packet_(allocateAvPacket()),
+      encoded_video_buffer_(std::move(encoded_video_buffer)) {
+    if (!this->encoded_video_buffer_) {
+        throw std::invalid_argument("A fonte FFmpeg requer um buffer de pacotes codificados.");
+    }
     this->openInputAndSelectVideoStream(input_source);
     this->initializeVideoFormat();
     this->video_stream_parameters_ = std::make_shared<const VideoStreamParameters>(
@@ -234,24 +241,21 @@ bool FfmpegEncodedVideoSource::getNextPacket(
         this->current_encoded_packet_->time_base = this->encoded_video_stream_->time_base;
 
         try {
-            auto encoded_packets_for_nvdec = filterH264PacketToAnnexB(
+            AvPacketPtr encoded_packet_for_nvdec = filterH264PacketToAnnexB(
                 *this->annex_b_filter_for_nvdec_,
                 *this->current_encoded_packet_
             );
-            if (encoded_packets_for_nvdec.size() != 1 || !encoded_packets_for_nvdec.front() ||
-                encoded_packets_for_nvdec.front()->data == nullptr || encoded_packets_for_nvdec.front()->size <= 0) {
-                CV_LOG_ERROR(nullptr,
-                    "O filtro H.264 deve produzir um pacote valido por entrada para manter a contagem raw do OpenCV.");
+            if (!encoded_packet_for_nvdec || encoded_packet_for_nvdec->data == nullptr ||
+                encoded_packet_for_nvdec->size <= 0) {
+                CV_LOG_ERROR(nullptr, "O filtro H.264 produziu um pacote sem dados para o NVDEC.");
                 return false;
             }
 
-            AvPacketPtr encoded_packet_for_queue = cloneAvPacket(*this->current_encoded_packet_);
-            {
-                std::lock_guard<std::mutex> lock(this->encoded_packets_queue_mutex_);
-                this->encoded_packets_queue_.push_back(std::move(encoded_packet_for_queue));
-            }
+            // O clone compartilha os bytes por contagem de referencia; o original
+            // e reaproveitado na proxima chamada de av_read_frame.
+            this->encoded_video_buffer_->pushPacket(cloneAvPacket(*this->current_encoded_packet_));
 
-            this->current_encoded_packet_for_nvdec_ = std::move(encoded_packets_for_nvdec.front());
+            this->current_encoded_packet_for_nvdec_ = std::move(encoded_packet_for_nvdec);
             *encoded_packet_data_for_nvdec = this->current_encoded_packet_for_nvdec_->data;
             *encoded_packet_size_bytes_for_nvdec = static_cast<std::size_t>(this->current_encoded_packet_for_nvdec_->size);
             return true;
@@ -260,37 +264,4 @@ bool FfmpegEncodedVideoSource::getNextPacket(
             return false;
         }
     }
-}
-
-std::vector<AvPacketPtr> FfmpegEncodedVideoSource::dequeueEncodedPackets(
-    std::size_t packet_count
-) {
-    std::lock_guard<std::mutex> lock(this->encoded_packets_queue_mutex_);
-
-    if (this->encoded_packets_queue_.size() < packet_count) {
-        throw std::runtime_error(
-            "Fila de AVPacket dessincronizada: esperados " +
-            std::to_string(packet_count) + ", disponiveis " +
-            std::to_string(this->encoded_packets_queue_.size()) + "."
-        );
-    }
-
-    std::vector<AvPacketPtr> dequeued_packets;
-    dequeued_packets.reserve(packet_count);
-
-    for (std::size_t packet_index = 0; packet_index < packet_count; ++packet_index) {
-        dequeued_packets.push_back(std::move(this->encoded_packets_queue_.front()));
-        this->encoded_packets_queue_.pop_front();
-    }
-
-    return dequeued_packets;
-}
-
-EncodedVideoPackets FfmpegEncodedVideoSource::dequeueEncodedPacketsWithStreamParameters(
-    std::size_t packet_count
-) {
-    return {
-        this->dequeueEncodedPackets(packet_count),
-        this->video_stream_parameters_
-    };
 }

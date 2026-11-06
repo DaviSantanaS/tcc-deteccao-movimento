@@ -1,3 +1,4 @@
+#include "buffers/EncodedVideoBuffer.hpp"
 #include "input/VideoStreamReader.hpp"
 
 #include <cmath>
@@ -34,7 +35,8 @@ int main(int argument_count, char** argument_values) {
 
         {
             cv::cuda::Stream cuda_stream;
-            VideoStreamReader video_reader(argument_values[1]);
+            const auto encoded_video_buffer = std::make_shared<EncodedVideoBuffer>();
+            VideoStreamReader video_reader(argument_values[1], encoded_video_buffer);
             const VideoStreamReader& const_video_reader = video_reader;
             retained_video_stream_parameters = const_video_reader.getVideoStreamParameters();
             const auto second_video_stream_parameters = const_video_reader.getVideoStreamParameters();
@@ -50,10 +52,9 @@ int main(int argument_count, char** argument_values) {
             }
             std::cout << "reader FPS=" << video_reader.getFramesPerSecond() << '\n';
             DecodedFrame decoded_frame;
-            std::vector<AvPacketPtr> encoded_packets;
 
             for (std::uint64_t expected_frame_index = 0; expected_frame_index < 3; ++expected_frame_index) {
-                if (!video_reader.read(decoded_frame, encoded_packets, cuda_stream)) {
+                if (!video_reader.read(decoded_frame, cuda_stream)) {
                     throw std::runtime_error("O arquivo deve fornecer pelo menos tres frames decodificados.");
                 }
                 cuda_stream.waitForCompletion();
@@ -83,6 +84,14 @@ int main(int argument_count, char** argument_values) {
                     throw std::runtime_error("O getter deve compartilhar a posse da mesma configuracao durante as leituras.");
                 }
 
+                // Sem modo raw, nao ha relacao exata entre um frame e os pacotes:
+                // a fonte guarda no buffer tudo o que leu ate agora.
+                std::vector<AvPacketPtr> encoded_packets;
+                for (AvPacketPtr buffered_packet = encoded_video_buffer->tryPopPacket();
+                     buffered_packet;
+                     buffered_packet = encoded_video_buffer->tryPopPacket()) {
+                    encoded_packets.push_back(std::move(buffered_packet));
+                }
                 received_packet_count += encoded_packets.size();
                 for (const auto& packet : encoded_packets) {
                     if (!packet || packet->data == nullptr || packet->size <= 0 ||

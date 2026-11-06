@@ -65,7 +65,7 @@ AvBitstreamFilterPtr createH264AnnexBFilter(
     return filter_context;
 }
 
-std::vector<AvPacketPtr> filterH264PacketToAnnexB(
+AvPacketPtr filterH264PacketToAnnexB(
     AVBSFContext& annex_b_filter_context,
     const AVPacket& original_encoded_packet
 ) {
@@ -88,24 +88,36 @@ std::vector<AvPacketPtr> filterH264PacketToAnnexB(
         );
     }
 
-    std::vector<AvPacketPtr> annex_b_packets;
-    while (true) {
-        AvPacketPtr annex_b_packet = allocateAvPacket();
-        const int packet_reception_status = av_bsf_receive_packet(
-            &annex_b_filter_context,
-            annex_b_packet.get()
-        );
-        if (packet_reception_status == AVERROR(EAGAIN) || packet_reception_status == AVERROR_EOF) {
-            return annex_b_packets;
-        }
-        if (packet_reception_status < 0) {
-            throw std::runtime_error(
-                "Nao foi possivel receber o pacote do filtro H.264: erro " +
-                std::to_string(packet_reception_status)
-            );
-        }
-
-        annex_b_packet->time_base = annex_b_filter_context.time_base_out;
-        annex_b_packets.push_back(std::move(annex_b_packet));
+    AvPacketPtr annex_b_packet = allocateAvPacket();
+    const int packet_reception_status = av_bsf_receive_packet(
+        &annex_b_filter_context,
+        annex_b_packet.get()
+    );
+    if (packet_reception_status == AVERROR(EAGAIN) || packet_reception_status == AVERROR_EOF) {
+        throw std::runtime_error("O filtro H.264 nao produziu pacote para a entrada enviada.");
     }
+    if (packet_reception_status < 0) {
+        throw std::runtime_error(
+            "Nao foi possivel receber o pacote do filtro H.264: erro " +
+            std::to_string(packet_reception_status)
+        );
+    }
+    annex_b_packet->time_base = annex_b_filter_context.time_base_out;
+
+    // O h264_mp4toannexb produz uma saida por entrada. A segunda recepcao
+    // confirma isso e deixa o filtro drenado para o proximo envio.
+    AvPacketPtr unexpected_extra_packet = allocateAvPacket();
+    const int extra_packet_reception_status = av_bsf_receive_packet(
+        &annex_b_filter_context,
+        unexpected_extra_packet.get()
+    );
+    if (extra_packet_reception_status != AVERROR(EAGAIN) && extra_packet_reception_status != AVERROR_EOF) {
+        throw std::runtime_error(
+            extra_packet_reception_status < 0
+                ? "Nao foi possivel drenar o filtro H.264: erro " + std::to_string(extra_packet_reception_status)
+                : std::string("O filtro H.264 produziu mais de um pacote para uma unica entrada.")
+        );
+    }
+
+    return annex_b_packet;
 }

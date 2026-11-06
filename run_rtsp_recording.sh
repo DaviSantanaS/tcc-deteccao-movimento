@@ -8,7 +8,7 @@ show_usage() {
     'Padroes: ~/Vídeos/tcc/video_h264_fhd_60fps.mp4, recordings do projeto, 1000 pacotes.' \
     'Webcam: /dev/video0 em YUYV, 640x480 a 30 FPS; FFmpeg codifica H.264 para a entrada RTSP.' \
     'RTSP local: rtsp://127.0.0.1:8554/video; corte dos MP4s no proximo keyframe.' \
-    'SHOW_PREVIEW=0 desativa a janela; RTSP_TRANSPORT=tcp troca UDP por TCP no publicador e na previa.' \
+    'SHOW_PREVIEW=0 desativa a janela do gravador; RTSP_TRANSPORT=tcp troca UDP por TCP no publicador.' \
     'MEDIAMTX_BIN e OPENCV_DIR permitem ajustar os caminhos das dependencias.' \
     'Ctrl+C finaliza o gravador antes de encerrar a transmissao. MP4s e logs sao preservados.'
 }
@@ -51,7 +51,6 @@ cleanup() {
   trap '' INT TERM
   set +e
   stop_owned_process "${recorder_pid}" INT 10
-  stop_owned_process "${preview_pid}" TERM 3
   stop_owned_process "${publisher_pid}" TERM 3
   stop_owned_process "${mediamtx_pid}" TERM 3
   if [[ -n "${log_viewer_pid}" ]]; then
@@ -153,15 +152,16 @@ fi
 require_free_port -ltn 8554
 require_free_port -lun 8000
 require_free_port -lun 8001
-if [[ "${show_preview}" == 1 ]] &&
-   { ! command -v ffplay >/dev/null 2>&1 || [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; }; then
-  printf '[aviso] FFplay ou ambiente grafico indisponivel; seguindo sem janela.\n' >&2
+if [[ "${show_preview}" == 1 && -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+  printf '[aviso] Ambiente grafico indisponivel; seguindo sem janela.\n' >&2
   show_preview=0
 fi
+# A janela e do proprio gravador: mostra o frame que ele ja decodifica, na mesma conexao RTSP.
+recorder_preview_arguments=()
+[[ "${show_preview}" == 1 ]] || recorder_preview_arguments=(--sem-video)
 
 mediamtx_pid=''
 publisher_pid=''
-preview_pid=''
 recorder_pid=''
 log_viewer_pid=''
 run_directory=''
@@ -181,7 +181,7 @@ printf '%s\n' \
   'rtmp: false' 'hls: false' 'webrtc: false' 'srt: false' 'moq: false' \
   'paths:' '  video:' '    source: publisher' '    overridePublisher: false' \
   >"${run_directory}/mediamtx.yml"
-printf 'Fonte: %s\nRTSP: %s\nTransporte do publicador/previa: %s\nLogs: %s\n' \
+printf 'Fonte: %s\nRTSP: %s\nTransporte do publicador: %s\nLogs: %s\n' \
   "${input_source}" "${rtsp_url}" "${rtsp_transport}" "${run_directory}"
 
 printf '\n[1/4] Compilando o gravador...\n'
@@ -214,16 +214,9 @@ setsid ffmpeg -hide_banner -loglevel info -nostdin \
 publisher_pid=$!
 wait_for_h264_publication
 
-if [[ "${show_preview}" == 1 ]]; then
-  setsid ffplay -hide_banner -loglevel warning -vcodec h264_cuvid \
-    -rtsp_transport "${rtsp_transport}" -fflags nobuffer -flags low_delay -framedrop \
-    -window_title 'TCC - RTSP e gravacao MP4' "${rtsp_url}" \
-    >"${run_directory}/ffplay.log" 2>&1 &
-  preview_pid=$!
-fi
-
-printf '\n[4/4] Gravando MP4s; Ctrl+C finaliza o trecho atual...\n'
+printf '\n[4/4] Gravando MP4s; Ctrl+C (ou Esc/q na janela) finaliza o trecho atual...\n'
 setsid "${build_directory}/motion_mog2" "${rtsp_url}" "${output_directory}" "${target_packet_count}" \
+  "${recorder_preview_arguments[@]}" \
   >"${run_directory}/recording.log" 2>&1 &
 recorder_pid=$!
 tail -n +1 -s 0.2 -f "${run_directory}/recording.log" &
@@ -232,11 +225,6 @@ log_viewer_pid=$!
 while kill -0 "${recorder_pid}" 2>/dev/null; do
   kill -0 "${mediamtx_pid}" 2>/dev/null || fail "MediaMTX encerrou. Consulte ${run_directory}/mediamtx.log"
   kill -0 "${publisher_pid}" 2>/dev/null || fail "FFmpeg encerrou. Consulte ${run_directory}/ffmpeg.log"
-  if [[ -n "${preview_pid}" ]] && ! kill -0 "${preview_pid}" 2>/dev/null; then
-    wait "${preview_pid}" 2>/dev/null || true
-    preview_pid=''
-    printf '[aviso] Previa encerrada; a gravacao continua. Consulte %s/ffplay.log\n' "${run_directory}" >&2
-  fi
   sleep 0.2
 done
 
