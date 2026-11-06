@@ -94,27 +94,6 @@ if(BUILD_TESTING)
 
     add_test(NAME av_output_format_context_tests COMMAND av_output_format_context_tests)
 
-    add_executable(
-            encoded_video_buffer_tests
-            tests/encoded_video_buffer_tests.cpp
-            src/buffers/EncodedVideoBuffer.cpp
-            src/ffmpeg/AvPacket.cpp
-            src/ffmpeg/AvCodecParameters.cpp
-            src/ffmpeg/VideoStreamParameters.cpp
-    )
-
-    target_include_directories(
-            encoded_video_buffer_tests
-            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-
-    target_link_libraries(
-            encoded_video_buffer_tests
-            PRIVATE PkgConfig::LIBAVCODEC
-    )
-
-    add_test(NAME encoded_video_buffer_tests COMMAND encoded_video_buffer_tests)
-
     find_package(Threads REQUIRED)
 
     add_executable(

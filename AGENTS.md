@@ -44,8 +44,8 @@ Não entregue uma implementação grande para ser estudada posteriormente.
 - Antes de afirmar uma garantia ou limitação de FFmpeg, OpenCV ou CUDA, confira a documentação oficial da API efetivamente usada e indique a fonte. Se não houver evidência suficiente, explicite a dúvida em vez de apresentar uma hipótese como fato.
 - Não use ressalvas genéricas sobre codecs, pacotes ou frames para rejeitar uma proposta sem verificar se elas se aplicam ao caminho deste projeto.
 - Neste caminho, `FfmpegEncodedVideoSource::getNextPacket()` usa `av_read_frame()` e preserva clones dos pacotes originais de vídeo. A documentação dessa função estabelece que, para vídeo, cada pacote retornado contém exatamente um frame codificado. Portanto, contar esses pacotes preservados permite contar os frames codificados nesse caminho. A garantia vem da função e do caminho dos dados, não simplesmente do tipo `AVPacket`. Referência: [contrato de av_read_frame() no FFmpeg 7.1](https://github.com/FFmpeg/FFmpeg/blob/n7.1/libavformat/avformat.h#L2232-L2259); confira também a versão usada no ambiente ao avaliar diferenças de API.
-- Diferencie essa relação da quantidade de frames já entregues pelo decoder. `VideoStreamReader::read()` recupera um frame decodificado e consulta `PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB` para retirar da fila a quantidade correspondente de pacotes; não presuma que o vetor retornado tenha sempre um elemento.
-- O buffer atual acumula os pacotes em um único `std::vector<AvPacketPtr>` e usa `size()` como contagem, sem contador separado. `max_buffered_packet_count_` limita pacotes; `appendPackets()` move somente o que cabe, mantém as sobras no vetor de entrada e retorna `void`. `checkIfFull()` apenas consulta se o buffer está cheio. Chamadas sem pacotes não aumentam a ocupação. Essa mudança está nas alterações locais posteriores ao commit base indicado abaixo; confira o código antes de explicá-la.
+- Diferencie essa relação da quantidade de frames já entregues pelo decoder. `VideoStreamReader::read()` recupera um frame decodificado e consulta `PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB` para avançar a fronteira da fila; não presuma que cada leitura contabilize somente um pacote.
+- A fila atual é `EncodedPacketQueue`, pertencente à fonte FFmpeg. Ela mantém um `std::deque<AvPacketPtr>` e uma fronteira `counted_packet_count_`. `pushPacket()` insere no final sem avançar a fronteira; `advanceCountedPackets()` avança somente a contagem. A retirada e o descarte normais atuam na região contabilizada; `takeAllPackets()` também retira os pacotes adiantados no encerramento. A antiga classe `EncodedVideoBuffer` foi removida.
 - Ao avaliar uma mudança na unidade do contador, examine também a checagem do limite, o retorno, o chamador e o destino dos excedentes. Mover o incremento para dentro do laço pode ultrapassar o limite em uma única chamada; trocar `==` por `>=` detecta a ultrapassagem, mas não impede inserir pacotes além do limite.
 - Diferencie sempre objetivo final, implementação existente, proposta em discussão e comportamento verificado por execução. Corrija explicitamente uma explicação anterior quando o código ou a documentação a contradisser.
 
@@ -102,21 +102,19 @@ Uma etapa deve seguir obrigatoriamente este ciclo:
 7. Mostrar o diff específico.
 8. Compilar ou executar um teste pequeno relacionado à etapa.
 9. Analisar o resultado.
-10. Fazer perguntas para verificar o entendimento.
-11. Aguardar confirmação antes de avançar.
+10. Fazer perguntas para verificar o entendimento somente quando Davi pedir explicitamente.
+11. Aguardar a próxima orientação ou “próximo” antes de avançar, sem exigir uma resposta de entendimento.
 
 Nunca avance automaticamente para o método seguinte.
 
 ## Verificação de entendimento
 
-Depois de cada implementação:
+Durante o estudo e depois de cada implementação:
 
-- peça para Davi explicar o método com suas palavras;
-- faça perguntas sobre as linhas adicionadas;
-- misture perguntas da etapa atual com conceitos anteriores;
-- quando ele não souber algo, explique e pergunte novamente mais adiante;
-- não considere a etapa concluída apenas porque compilou;
-- conclua somente quando o comportamento estiver testado e compreendido.
+- faça perguntas de entendimento ou peça para Davi explicar o código somente quando ele solicitar explicitamente esse exercício;
+- não termine as respostas com perguntas de entendimento por padrão;
+- quando Davi solicitar perguntas, limite o exercício ao escopo pedido;
+- diferencie o que foi explicado do que foi verificado por testes; compilar não comprova compreensão.
 
 ## Limite de cada alteração
 
@@ -164,7 +162,7 @@ Componentes principais esperados no projeto:
 
 - `main`;
 - `VideoStreamReader`;
-- `EncodedVideoBuffer`;
+- `EncodedPacketQueue`;
 - `Mog2MotionDetector`;
 - estruturas distintas para frame decodificado e dados codificados.
 
@@ -174,7 +172,7 @@ Antes de afirmar que algum componente existe, confirme no código da branch atua
 
 O trabalho atual é de estudo de `motion_mog2`: entrada, inicialização, GPU, reader, estruturas de dados, ownership e buffer. A integração com FFmpeg e `AVPacket` já existe; consulte os nomes e assinaturas atuais antes de retomar qualquer explicação.
 
-Explique apenas um pequeno bloco por resposta, com arquivo e linhas atuais, entradas, responsabilidade, resultado, possíveis erros e tempo de vida quando relevante. Termine com uma pergunta curta de entendimento e aguarde a resposta ou “próximo”. Os detalhes de implementação do MP4 ficam para depois.
+Explique apenas um pequeno bloco por resposta, com arquivo e linhas atuais, entradas, responsabilidade, resultado, possíveis erros e tempo de vida quando relevante. Faça perguntas de entendimento somente quando Davi pedir explicitamente. Aguarde a próxima orientação ou “próximo” antes de avançar. Os detalhes de implementação do MP4 ficam para depois.
 
 ## Proibições atuais
 
@@ -219,13 +217,12 @@ Transcoding é proibido no caminho de gravação. A existência de código de re
 
 Esta seção é uma referência da leitura do código, não uma substituição para conferir `git status`, commit, assinaturas e alterações locais em cada sessão.
 
-- Branch conferida: `agent/tcc-stepwise-codex-test`; commit base `2c1a384` (`feat: permite usar webcam no script de gravacao RTSP`).
-- Componentes confirmados no caminho atual: `main`, `VideoStreamReader`, `FfmpegEncodedVideoSource`, `EncodedVideoBuffer`, `DecodedFrame`, `AvPacketPtr`, `VideoStreamParameters` e `EncodedVideoPackets`. Arquivos com estruturas antigas podem permanecer no repositório; isso não prova seu uso pelo `main`.
+- Branch conferida: `feat/fila-unica`; commit base `4946093`, com alterações locais posteriores para remover o buffer antigo e ajustar as instruções de estudo.
+- Componentes confirmados no caminho atual: `main`, `VideoStreamReader`, `FfmpegEncodedVideoSource`, `EncodedPacketQueue`, `Mog2MotionDetector`, `DecodedFrame`, `AvPacketPtr`, `VideoStreamParameters` e `EncodedVideoPackets`. Arquivos com estruturas antigas podem permanecer no repositório; isso não prova seu uso pelo `main`.
 - `FfmpegEncodedVideoSource` faz a leitura direta com FFmpeg, preserva clones dos `AVPacket` originais em uma fila e prepara uma versão em Annex B para o NVDEC.
 - `VideoStreamReader` usa `allowFrameDrop = false`, `rawMode = true` e `udpSource = true` (`motion_mog2/src/input/VideoStreamReader.cpp`).
-- Está planejada a substituição da fila da fonte, do vetor pendente do `main` e do `EncodedVideoBuffer` por uma fila única (`EncodedPacketQueue`), conforme `motion_mog2/specs/`.
-- `VideoStreamReader` usa `cv::cudacodec::VideoReader` com essa fonte. O modo raw permite consultar a contagem usada para retirar os pacotes originais da fila; `read()` entrega separadamente o frame na GPU e um `std::vector<AvPacketPtr>`.
-- `EncodedVideoBuffer` move para um vetor único somente os pacotes que cabem, mantendo o excedente na entrada. A ocupação é o tamanho desse vetor, e sua transferência esvazia o buffer. O limite padrão é 1000 pacotes, configurável pelo `main`; não é um limite de bytes.
-- O `main` já contém gravação MP4 por remux, com corte no próximo keyframe após atingir o alvo de pacotes. Ele processa as sobras antes de pedir outro frame ao reader e mantém separadas as contagens de leituras decodificadas e pacotes. Essa gravação não é acionada por detecção de movimento.
-- `Mog2MotionDetector` existe e é incluído no alvo pelo CMake, mas o `main` atual não instancia nem chama o detector. Receber, decodificar, detectar movimento e preservar o trecho do evento continuam sendo o objetivo de integração.
+- A fila única (`EncodedPacketQueue`) já substituiu a fila anterior da fonte, o vetor pendente do `main` e o buffer antigo no fluxo da aplicação. A classe antiga e seus testes exclusivos foram removidos; `pre_event_tests.cpp` preserva somente os testes da conversão de segundos para frames e não possui alvo no CMake atual.
+- `VideoStreamReader` usa `cv::cudacodec::VideoReader` com essa fonte. `read()` recupera um frame na GPU e avança a fronteira da fila conforme a contagem raw; não devolve mais um vetor de pacotes.
+- O `main` mantém o histórico de pré-evento na fila única e retira lotes para escrita por remux. O teto aplicado durante a espera limita pacotes contabilizados, não bytes nem necessariamente o tamanho total da fila.
+- O `main` instancia e chama `Mog2MotionDetector`; os sinais de início e fim acionam a gravação por evento, com pré-evento, pós-evento e fechamento em keyframe. No encerramento normal, para o decoder e retira os pacotes restantes para concluir um evento ativo.
 - Existem fontes de testes para pacotes, parâmetros, buffer, fonte FFmpeg, reader e saída MP4. Presença de arquivos e configuração no CMake não significam testes executados ou aprovados nesta máquina.
