@@ -17,6 +17,7 @@ add_executable(
         src/input/VideoStreamReader.cpp
         src/detectors/Mog2MotionDetector.cpp
         src/detectors/MotionHysteresis.cpp
+        src/recording/Mp4EventPacketSink.cpp
         src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
         src/config/EventRecordingConfig.cpp
@@ -46,6 +47,32 @@ target_link_libraries(
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(
+            mp4_event_packet_sink_tests
+            tests/mp4_event_packet_sink_tests.cpp
+            src/recording/Mp4EventPacketSink.cpp
+            src/ffmpeg/AvOutputFileContext.cpp
+            src/ffmpeg/AvMp4OutputContext.cpp
+            src/ffmpeg/AvPacket.cpp
+            src/ffmpeg/VideoStreamParameters.cpp
+            src/ffmpeg/AvCodecParameters.cpp
+    )
+
+    target_include_directories(
+            mp4_event_packet_sink_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            mp4_event_packet_sink_tests
+            PRIVATE
+            PkgConfig::LIBAVFORMAT
+            PkgConfig::LIBAVCODEC
+            PkgConfig::LIBAVUTIL
+    )
+
+    add_test(NAME mp4_event_packet_sink_tests COMMAND mp4_event_packet_sink_tests)
+
     add_executable(
             motion_hysteresis_tests
             tests/motion_hysteresis_tests.cpp
