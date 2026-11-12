@@ -18,6 +18,7 @@ add_executable(
         src/detectors/Mog2MotionDetector.cpp
         src/detectors/MotionHysteresis.cpp
         src/recording/Mp4EventPacketSink.cpp
+        src/recording/EventRecorder.cpp
         src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
         src/config/EventRecordingConfig.cpp
@@ -136,6 +137,26 @@ if(BUILD_TESTING)
     add_test(NAME av_output_format_context_tests COMMAND av_output_format_context_tests)
 
     find_package(Threads REQUIRED)
+
+    add_executable(
+            event_recorder_tests
+            tests/event_recorder_tests.cpp
+            src/recording/EventRecorder.cpp
+            src/buffers/EncodedPacketQueue.cpp
+            src/ffmpeg/AvPacket.cpp
+    )
+
+    target_include_directories(
+            event_recorder_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(
+            event_recorder_tests
+            PRIVATE PkgConfig::LIBAVCODEC Threads::Threads
+    )
+
+    add_test(NAME event_recorder_tests COMMAND event_recorder_tests)
 
     add_executable(
             encoded_packet_queue_tests

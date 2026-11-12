@@ -1,13 +1,12 @@
-#include "buffers/EncodedPacketQueue.hpp"
 #include "config/EventRecordingConfig.hpp"
 #include "config/PreEventConfig.hpp"
 #include "detectors/Mog2MotionDetector.hpp"
 #include "input/VideoStreamReader.hpp"
+#include "recording/EventRecorder.hpp"
 #include "recording/Mp4EventPacketSink.hpp"
 
 #include <opencv2/core/cuda.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <csignal>
 #include <cstddef>
@@ -18,19 +17,6 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include <vector>
-
-namespace {
-
-enum class RecordingState {
-    idle,
-    waiting_keyframe,
-    recording,
-    post_event,
-    closing_at_keyframe
-};
-
-}
 
 static_assert(std::atomic<bool>::is_always_lock_free, "O handler de sinal exige atomic<bool> lock-free.");
 // Compartilhada pelo handler, laco e callback FFmpeg. Escrita em atomic<bool>
@@ -141,29 +127,11 @@ int main(int argument_count, char** argument_values) {
         DecodedFrame decoded_frame;
 
         Mp4EventPacketSink packet_sink(recording_config.output_directory, video_stream_parameters);
-        std::size_t recording_read_count = 0;
-        std::size_t recording_encoded_packet_count = 0;
-        std::size_t completed_recording_count = 0;
-        RecordingState recording_state = RecordingState::idle;
-        std::size_t post_remaining_packet_count = 0;
-
-        const auto recording_opener = [&]() {
-            packet_sink.openRecording();
-            recording_read_count = 1;
-            recording_encoded_packet_count = packet_sink.getWrittenPacketCount();
-            std::cout << "MP4_STARTED path=" << std::filesystem::path(packet_sink.getRecordingDescription()) << std::endl;
-        };
-        const auto encoded_packet_writer = [&](std::vector<AvPacketPtr>&& encoded_packets_for_output) {
-            packet_sink.writePackets(std::move(encoded_packets_for_output));
-            recording_encoded_packet_count = packet_sink.getWrittenPacketCount();
-        };
-        const auto recording_finalizer = [&]() {
-            packet_sink.finalizeRecording();
-            ++completed_recording_count;
-            std::cout << "MP4_SAVED path=" << std::filesystem::path(packet_sink.getRecordingDescription())
-                      << " decoded_reads=" << recording_read_count
-                      << " encoded_packets=" << recording_encoded_packet_count << std::endl;
-        };
+        EventRecorder event_recorder(
+            video_reader.getEncodedPacketQueue(), packet_sink,
+            EventRecorderConfig{lookback_packet_count, maximum_idle_packet_count, post_event_packet_count},
+            std::cout
+        );
 
         // A escrita fica na thread do read(); com allowFrameDrop=false,
         // o I/O pode atrasar a leitura RTSP. Uma thread de escrita fica para depois.
@@ -183,132 +151,14 @@ int main(int argument_count, char** argument_values) {
             if (motion_state.ended) {
                 std::cout << "MOTION_ENDED frame=" << decoded_frame.decoded_frame_index << std::endl;
             }
-            EncodedPacketQueue& encoded_packet_queue = video_reader.getEncodedPacketQueue();
-            if (packet_sink.checkIfRecordingIsOpen()) {
-                ++recording_read_count;
-            }
-
-            // take* retorna o lote por valor; o lock da fila ja foi liberado
-            // quando comeca a escrita no arquivo.
-            switch (recording_state) {
-                case RecordingState::idle: {
-                    if (motion_state.started) {
-                        std::cout << "EVENT_STARTED frame=" << decoded_frame.decoded_frame_index << std::endl;
-                        auto encoded_packets = encoded_packet_queue.takeCountedPacketsFromLookback(lookback_packet_count);
-                        if (encoded_packets.empty()) {
-                            recording_state = RecordingState::waiting_keyframe;
-                            std::cout << "EVENT_WAITING_KEYFRAME" << std::endl;
-                        } else {
-                            const std::size_t pre_event_written_packet_count = encoded_packets.size();
-                            recording_opener();
-                            encoded_packet_writer(std::move(encoded_packets));
-                            std::cout << "PRE_EVENT_WRITTEN packets=" << pre_event_written_packet_count << std::endl;
-                            recording_state = RecordingState::recording;
-                        }
-                    } else {
-                        (void)encoded_packet_queue.trimCountedPackets(lookback_packet_count, maximum_idle_packet_count);
-                    }
-                    break;
-                }
-                case RecordingState::waiting_keyframe: {
-                    (void)encoded_packet_queue.discardCountedPacketsBeforeFirstKeyframe();
-                    auto encoded_packets = encoded_packet_queue.takeCountedPackets();
-                    if (!encoded_packets.empty()) {
-                        recording_opener();
-                        encoded_packet_writer(std::move(encoded_packets));
-                        recording_state = RecordingState::recording;
-                    } else if (motion_state.ended) {
-                        std::cout << "EVENT_DISCARDED_NO_KEYFRAME" << std::endl;
-                        recording_state = RecordingState::idle;
-                    }
-                    break;
-                }
-                case RecordingState::recording:
-                    encoded_packet_writer(encoded_packet_queue.takeCountedPackets());
-                    break;
-                case RecordingState::post_event: {
-                    auto encoded_packets = encoded_packet_queue.takeCountedPackets();
-                    if (motion_state.started) {
-                        std::cout << "EVENT_RESUMED frame=" << decoded_frame.decoded_frame_index << std::endl;
-                        encoded_packet_writer(std::move(encoded_packets));
-                        recording_state = RecordingState::recording;
-                    } else {
-                        const std::size_t written_packet_count = encoded_packets.size();
-                        encoded_packet_writer(std::move(encoded_packets));
-                        post_remaining_packet_count -= std::min(post_remaining_packet_count, written_packet_count);
-                        if (post_remaining_packet_count == 0) {
-                            std::cout << "POST_EVENT_EXPIRED frame=" << decoded_frame.decoded_frame_index << std::endl;
-                            recording_state = RecordingState::closing_at_keyframe;
-                        }
-                    }
-                    break;
-                }
-                case RecordingState::closing_at_keyframe: {
-                    if (motion_state.started) {
-                        std::cout << "EVENT_RESUMED frame=" << decoded_frame.decoded_frame_index << std::endl;
-                        encoded_packet_writer(encoded_packet_queue.takeCountedPackets());
-                        recording_state = RecordingState::recording;
-                    } else {
-                        bool keyframe_found = false;
-                        encoded_packet_writer(
-                            encoded_packet_queue.takeCountedPacketsBeforeNextKeyframe(keyframe_found)
-                        );
-                        if (keyframe_found) {
-                            recording_finalizer();
-                            recording_state = RecordingState::idle;
-                        }
-                    }
-                    break;
-                }
-            }
-
-            // Tambem cobre ended no mesmo read que abriu um arquivo apos esperar keyframe.
-            if (recording_state == RecordingState::recording && motion_state.ended) {
-                std::cout << "EVENT_ENDED frame=" << decoded_frame.decoded_frame_index << std::endl;
-                post_remaining_packet_count = post_event_packet_count;
-                recording_state = post_remaining_packet_count == 0
-                    ? RecordingState::closing_at_keyframe
-                    : RecordingState::post_event;
-            }
+            event_recorder.processDecodedFrame(motion_state, decoded_frame.decoded_frame_index);
         }
 
         video_reader.stopDecoding();
         auto remaining_encoded_packets = video_reader.getEncodedPacketQueue().takeAllPackets();
-        // Os pacotes a frente da fronteira nao passaram pelo detector, mas
-        // continuam em sequencia com o evento e devem ser preservados no MP4.
-        switch (recording_state) {
-            case RecordingState::recording:
-            case RecordingState::post_event:
-            case RecordingState::closing_at_keyframe: {
-                const std::size_t flushed_packet_count = remaining_encoded_packets.size();
-                encoded_packet_writer(std::move(remaining_encoded_packets));
-                recording_finalizer();
-                std::cout << "SHUTDOWN_FLUSHED packets=" << flushed_packet_count << std::endl;
-                break;
-            }
-            case RecordingState::waiting_keyframe: {
-                const auto first_keyframe = std::find_if(
-                    remaining_encoded_packets.begin(), remaining_encoded_packets.end(),
-                    [](const AvPacketPtr& encoded_packet) { return (encoded_packet->flags & AV_PKT_FLAG_KEY) != 0; }
-                );
-                remaining_encoded_packets.erase(remaining_encoded_packets.begin(), first_keyframe);
-                if (!remaining_encoded_packets.empty()) {
-                    const std::size_t flushed_packet_count = remaining_encoded_packets.size();
-                    recording_opener();
-                    encoded_packet_writer(std::move(remaining_encoded_packets));
-                    recording_finalizer();
-                    std::cout << "SHUTDOWN_FLUSHED packets=" << flushed_packet_count << std::endl;
-                } else {
-                    std::cout << "EVENT_DISCARDED_NO_KEYFRAME" << std::endl;
-                }
-                break;
-            }
-            case RecordingState::idle:
-                std::cout << "SHUTDOWN_DISCARDED_IDLE_PACKETS packets=" << remaining_encoded_packets.size() << std::endl;
-                break;
-        }
+        event_recorder.finishCapture(std::move(remaining_encoded_packets));
         std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.getDecodedFrameCount()
-                  << " saved_files=" << completed_recording_count << "\n";
+                  << " saved_files=" << event_recorder.getCompletedRecordingCount() << "\n";
     } catch (const cv::Exception& error) {
         std::cerr << "[fatal] CUDA/NVDEC: " << error.what() << "\n";
         return 2;
