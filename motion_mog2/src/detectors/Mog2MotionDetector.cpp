@@ -20,11 +20,11 @@ Mog2MotionDetector::Mog2MotionDetector(
         static_cast<std::int64_t>(decoded_frame_width) *
         static_cast<std::int64_t>(decoded_frame_height)
     ),
-    motion_threshold_ratio_(motion_threshold_percent / 100.0),
-    motion_start_frame_count_(motion_start_frame_count),
-    motion_end_frame_count_(motion_end_frame_count),
     learning_rate_(learning_rate),
-    warmup_frame_count_(
+    motion_hysteresis_(
+        motion_threshold_percent / 100.0,
+        motion_start_frame_count,
+        motion_end_frame_count,
         static_cast<std::uint64_t>(stream_fps * 1.0 + 0.5)
     ) {
     if (motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
@@ -86,54 +86,17 @@ MotionState Mog2MotionDetector::detectMotion(
     const std::int64_t foreground_pixel_count =
         cv::cuda::countNonZero(this->motion_mask_gpu_);
 
-    MotionState motion_state;
-
-    if (decoded_frame_index < this->warmup_frame_count_) {
-        this->consecutive_motion_frame_count_ = 0;
-        this->consecutive_idle_frame_count_ = 0;
-        motion_state.active = this->motion_active_;
-        return motion_state;
-    }
-
-    motion_state.foreground_ratio =
+    const double foreground_ratio =
         static_cast<double>(foreground_pixel_count) /
         static_cast<double>(this->decoded_frame_pixel_count_);
 
-    motion_state.detected =
-        motion_state.foreground_ratio >= this->motion_threshold_ratio_;
-
-    if (!this->motion_active_) {
-        if (motion_state.detected) {
-            if (++this->consecutive_motion_frame_count_ >= this->motion_start_frame_count_) {
-                this->motion_active_ = true;
-                motion_state.started = true;
-                this->consecutive_motion_frame_count_ = 0;
-                this->consecutive_idle_frame_count_ = 0;
-            }
-        } else {
-            this->consecutive_motion_frame_count_ = 0;
-        }
-    } else {
-        if (!motion_state.detected) {
-            if (++this->consecutive_idle_frame_count_ >= this->motion_end_frame_count_) {
-                this->motion_active_ = false;
-                motion_state.ended = true;
-                this->consecutive_idle_frame_count_ = 0;
-                this->consecutive_motion_frame_count_ = 0;
-            }
-        } else {
-            this->consecutive_idle_frame_count_ = 0;
-        }
-    }
-
-    motion_state.active = this->motion_active_;
-    return motion_state;
+    return this->motion_hysteresis_.update(foreground_ratio, decoded_frame_index);
 }
 
 std::uint64_t Mog2MotionDetector::getWarmupFrameCount() const {
-    return this->warmup_frame_count_;
+    return this->motion_hysteresis_.getWarmupFrameCount();
 }
 
 bool Mog2MotionDetector::checkIfMotionIsActive() const {
-    return this->motion_active_;
+    return this->motion_hysteresis_.checkIfMotionIsActive();
 }

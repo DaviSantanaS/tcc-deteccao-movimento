@@ -16,6 +16,7 @@ add_executable(
         src/main.cpp
         src/input/VideoStreamReader.cpp
         src/detectors/Mog2MotionDetector.cpp
+        src/detectors/MotionHysteresis.cpp
         src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
         src/config/EventRecordingConfig.cpp
@@ -45,6 +46,19 @@ target_link_libraries(
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(
+            motion_hysteresis_tests
+            tests/motion_hysteresis_tests.cpp
+            src/detectors/MotionHysteresis.cpp
+    )
+
+    target_include_directories(
+            motion_hysteresis_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_test(NAME motion_hysteresis_tests COMMAND motion_hysteresis_tests)
+
     add_executable(
             av_output_io_context_tests
             tests/av_output_io_context_tests.cpp

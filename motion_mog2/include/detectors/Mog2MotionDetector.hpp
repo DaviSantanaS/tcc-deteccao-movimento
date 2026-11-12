@@ -1,18 +1,12 @@
 #pragma once
 
+#include "detectors/MotionHysteresis.hpp"
+
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/cudabgsegm.hpp>
 #include <opencv2/cudafilters.hpp>
 
 #include <cstdint>
-
-struct MotionState {
-    bool detected = false;
-    bool started = false;
-    bool active = false;
-    bool ended = false;
-    double foreground_ratio = 0.0;
-};
 
 class Mog2MotionDetector {
 public:
@@ -37,17 +31,10 @@ public:
 
 private:
     std::int64_t decoded_frame_pixel_count_ = 0;
-    double motion_threshold_ratio_ = 0.0;
-    int motion_start_frame_count_ = 0;
-    int motion_end_frame_count_ = 0;
     double learning_rate_ = 0.0;
-    std::uint64_t warmup_frame_count_ = 0;
+    MotionHysteresis motion_hysteresis_;
 
     cv::Ptr<cv::cuda::BackgroundSubtractorMOG2> mog2_detector_;
     cv::Ptr<cv::cuda::Filter> morphology_filter_;
     cv::cuda::GpuMat motion_mask_gpu_;
-
-    bool motion_active_ = false;
-    int consecutive_motion_frame_count_ = 0;
-    int consecutive_idle_frame_count_ = 0;
 };
