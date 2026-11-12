@@ -61,6 +61,7 @@ Quando o pedido mandar executar um arquivo de `motion_mog2/specs/`, este modo su
 - Termine com o relatório pedido na spec: arquivos alterados, comandos executados com o resultado real, o que ficou sem verificação e qualquer decisão tomada que a spec não cobria.
 - Não adicione dependências além das autorizadas na spec.
 - Transcoding continua proibido.
+- Plano atual: motion_mog2/specs/plano_mudancas_v2.md. Antes de cada etapa, faça source motion_mog2/tools/tcc_checks.sh.
 
 ### Protocolo compacto
 Mensagens de tarefa vêm no formato TASK. Execute direto, sem plano nem narração. Responda SOMENTE no formato REPORT, sem prosa.
