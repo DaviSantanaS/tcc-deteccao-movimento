@@ -1,4 +1,5 @@
 #include "recording/EventRecorder.hpp"
+#include "recording/PacketTimestampCheck.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,10 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+extern "C" {
+#include <libavutil/avutil.h>
+}
 
 namespace {
 
@@ -109,6 +114,46 @@ struct Scenario {
         this->event_recorder.finishCapture(this->encoded_packet_queue.takeAllPackets());
     }
 };
+
+void appendCountedPackets(
+    Scenario& scenario,
+    std::int64_t first_id,
+    std::int64_t last_id,
+    std::int64_t invalid_id = -1,
+    PacketTimestampIssue issue = PacketTimestampIssue::none,
+    std::int64_t additional_keyframe_id = -1
+) {
+    for (std::int64_t packet_id = first_id; packet_id <= last_id; ++packet_id) {
+        auto packet = makePacket(packet_id, packet_id % 60 == 0 || packet_id == additional_keyframe_id);
+        if (packet_id == invalid_id) {
+            if (issue == PacketTimestampIssue::missing_timestamp) {
+                packet->pts = AV_NOPTS_VALUE;
+                packet->dts = AV_NOPTS_VALUE;
+            } else if (issue == PacketTimestampIssue::pts_before_dts) {
+                packet->pts = packet->dts - 1;
+            } else if (issue == PacketTimestampIssue::non_increasing_dts) {
+                packet->dts = packet_id - 1;
+            }
+        }
+        scenario.encoded_packet_queue.pushPacket(std::move(packet));
+    }
+    scenario.encoded_packet_queue.advanceCountedPackets(static_cast<std::size_t>(last_id - first_id + 1));
+}
+
+void requireTimestampLog(
+    const Scenario& scenario,
+    const char* reason,
+    std::uint64_t frame_index,
+    std::size_t dropped_packets,
+    bool resumed
+) {
+    const std::string log = scenario.event_log.str();
+    const std::string marker = "EVENT_INVALID_TIMESTAMP ";
+    const std::string expected_line = marker + "reason=" + reason + " frame=" + std::to_string(frame_index) +
+        " dropped_packets=" + std::to_string(dropped_packets) + " resumed=" + (resumed ? "yes" : "no") + '\n';
+    require(log.find(expected_line) != std::string::npos && log.find(marker) == log.rfind(marker),
+            "Deve haver uma unica linha de timestamp invalido com os campos esperados por lote.");
+}
 
 void requireRange(const FakeRecording& recording, std::int64_t first, std::int64_t last) {
     require(recording.finalized && recording.starts_with_keyframe, "Gravacao deve ser finalizada e iniciar em keyframe.");
@@ -355,6 +400,146 @@ int main() {
             }
         }
         std::cout << "PASS: E03-T11 configuracoes invalidas rejeitadas.\n";
+
+        {
+            Scenario scenario({333, 1532, 300});
+            appendCountedPackets(scenario, 0, 120, 0, PacketTimestampIssue::missing_timestamp);
+            scenario.event_recorder.processDecodedFrame(motionEdges(true, false), 120);
+            require(scenario.event_recorder.getRecordingState() == RecordingState::recording,
+                    "E06-T02: deve retomar no keyframe valido do mesmo lote.");
+            requireTimestampLog(scenario, "missing_timestamp", 120, 60, true);
+            scenario.finish();
+            require(scenario.packet_sink.getRecordings().size() == 1, "E06-T02: primeiro keyframe invalido nao pode abrir arquivo.");
+            requireRange(scenario.packet_sink.getRecordings()[0], 60, 120);
+        }
+        std::cout << "PASS: E06-T02 primeiro keyframe sem carimbo descartado; retoma em K60 e descarta 60 pacotes.\n";
+
+        {
+            Scenario scenario({333, 1532, 300});
+            scenario.read(0, true, true);
+            appendCountedPackets(scenario, 1, 120, 10, PacketTimestampIssue::non_increasing_dts);
+            scenario.event_recorder.processDecodedFrame(motionEdges(false, false), 120);
+            requireTimestampLog(scenario, "non_increasing_dts", 120, 50, true);
+            scenario.finish();
+            require(scenario.packet_sink.getRecordings().size() == 2, "E06-T03: deve separar duas gravacoes.");
+            requireRange(scenario.packet_sink.getRecordings()[0], 0, 9);
+            requireRange(scenario.packet_sink.getRecordings()[1], 60, 120);
+        }
+        std::cout << "PASS: E06-T03 DTS repetido fecha em 9, descarta 50 pacotes e retoma em 60 no mesmo lote.\n";
+
+        {
+            Scenario scenario({333, 1532, 300});
+            scenario.read(0, true, true);
+            appendCountedPackets(scenario, 1, 5, 3, PacketTimestampIssue::non_increasing_dts);
+            scenario.event_recorder.processDecodedFrame(motionEdges(false, false), 5);
+            require(scenario.event_recorder.getRecordingState() == RecordingState::waiting_keyframe,
+                    "E06-T04: deve esperar keyframe depois de fechar.");
+            requireRange(scenario.packet_sink.getRecordings().at(0), 0, 2);
+            requireTimestampLog(scenario, "non_increasing_dts", 5, 3, false);
+            for (std::int64_t packet_id = 6; packet_id < 60; ++packet_id) {
+                scenario.read(packet_id, false);
+                require(scenario.packet_sink.getRecordings().size() == 1, "E06-T04: nao pode abrir antes do keyframe.");
+            }
+            scenario.read(60, true);
+            scenario.finish();
+            require(scenario.packet_sink.getRecordings().size() == 2, "E06-T04: keyframe seguinte deve abrir novo arquivo.");
+            requireRange(scenario.packet_sink.getRecordings()[1], 60, 60);
+        }
+        std::cout << "PASS: E06-T04 sem keyframe no lote, fecha o prefixo e espera K60 em leituras seguintes.\n";
+
+        {
+            Scenario scenario({1, 100, 100});
+            scenario.read(0, true, true);
+            scenario.read(1, false, false, true);
+            appendCountedPackets(scenario, 2, 5, 3, PacketTimestampIssue::non_increasing_dts, 4);
+            scenario.event_recorder.processDecodedFrame(motionEdges(false, false), 5);
+            require(scenario.event_recorder.getRecordingState() == RecordingState::idle &&
+                        !scenario.packet_sink.checkIfRecordingIsOpen(), "E06-T05: pos-evento invalido deve fechar e voltar a idle.");
+            require(scenario.packet_sink.getRecordings().size() == 1, "E06-T05: nao deve retomar no keyframe do lote.");
+            requireRange(scenario.packet_sink.getRecordings()[0], 0, 2);
+            requireTimestampLog(scenario, "non_increasing_dts", 5, 3, false);
+            scenario.finish();
+        }
+        std::cout << "PASS: E06-T05 invalido no pos-evento fecha e descarta a continuacao, sem retomada.\n";
+
+        {
+            for (const bool keyframe_in_batch : {false, true}) {
+                Scenario scenario({1, 100, 0});
+                scenario.read(0, true, true);
+                scenario.read(1, false, false, true);
+                appendCountedPackets(scenario, 2, 5, 3, PacketTimestampIssue::non_increasing_dts,
+                                     keyframe_in_batch ? 4 : -1);
+                scenario.event_recorder.processDecodedFrame(motionEdges(false, false), 5);
+                require(scenario.event_recorder.getRecordingState() == RecordingState::idle &&
+                            !scenario.packet_sink.checkIfRecordingIsOpen(), "E06-T06: fechamento invalido deve voltar a idle.");
+                requireRange(scenario.packet_sink.getRecordings().at(0), 0, 2);
+                requireTimestampLog(scenario, "non_increasing_dts", 5, keyframe_in_batch ? 1 : 3, false);
+                require(scenario.encoded_packet_queue.getCountedPacketCount() == (keyframe_in_batch ? 2 : 0),
+                        "E06-T06: keyframe que delimitou a retirada deve permanecer na fila.");
+                scenario.finish();
+            }
+        }
+        std::cout << "PASS: E06-T06 invalido durante fechamento fecha sem retomar nem finalizar duas vezes.\n";
+
+        {
+            Scenario scenario({333, 1532, 300});
+            constexpr std::array<std::uint64_t, 5> starts{118, 404, 875, 929, 1014};
+            constexpr std::array<std::uint64_t, 5> ends{205, 464, 921, 972, 1100};
+            for (std::uint64_t frame_index = 0; frame_index < 1181; ++frame_index) {
+                auto packet = makePacket(static_cast<std::int64_t>(frame_index), frame_index % 60 == 0);
+                packet->pts = AV_NOPTS_VALUE;
+                packet->dts = AV_NOPTS_VALUE;
+                scenario.encoded_packet_queue.pushPacket(std::move(packet));
+                scenario.encoded_packet_queue.advanceCountedPackets(1);
+                scenario.event_recorder.processDecodedFrame(
+                    motionEdges(std::find(starts.begin(), starts.end(), frame_index) != starts.end(),
+                                std::find(ends.begin(), ends.end(), frame_index) != ends.end()), frame_index
+                );
+            }
+            scenario.finish();
+            require(scenario.packet_sink.getRecordings().empty() && scenario.event_recorder.getCompletedRecordingCount() == 0,
+                    "E06-T07: fonte sem carimbos nao deve criar gravacoes.");
+            require(scenario.event_log.str().find("EVENT_INVALID_TIMESTAMP reason=missing_timestamp ") != std::string::npos,
+                    "E06-T07: descarte deve registrar carimbo ausente.");
+        }
+        std::cout << "PASS: E06-T07 baseline inteiro sem carimbos nao cria arquivos nem lanca excecao.\n";
+
+        {
+            Scenario scenario({333, 1532, 300});
+            scenario.read(0, true, true);
+            appendCountedPackets(scenario, 1, 5, 3, PacketTimestampIssue::pts_before_dts);
+            scenario.event_recorder.processDecodedFrame(motionEdges(false, false), 5);
+            require(scenario.event_recorder.getRecordingState() == RecordingState::waiting_keyframe,
+                    "E06-T08: pts anterior ao dts deve fechar e esperar keyframe.");
+            requireTimestampLog(scenario, "pts_before_dts", 5, 3, false);
+            requireRange(scenario.packet_sink.getRecordings().at(0), 0, 2);
+            scenario.read(60, true);
+            scenario.finish();
+            requireRange(scenario.packet_sink.getRecordings().at(1), 60, 60);
+        }
+        std::cout << "PASS: E06-T08 pts menor que dts fecha o prefixo e retoma somente em keyframe.\n";
+
+        {
+            Scenario scenario({333, 1532, 300});
+            scenario.read(0, true, true);
+            scenario.read(1, false);
+            for (std::int64_t packet_id = 2; packet_id <= 6; ++packet_id) {
+                auto packet = makePacket(packet_id, packet_id == 5);
+                if (packet_id == 3) {
+                    packet->dts = 2;
+                }
+                scenario.encoded_packet_queue.pushPacket(std::move(packet));
+            }
+            scenario.finish();
+            require(scenario.packet_sink.getRecordings().size() == 2 &&
+                        scenario.event_recorder.getCompletedRecordingCount() == 2,
+                    "E06-T09: encerramento deve finalizar prefixo e retomada.");
+            requireRange(scenario.packet_sink.getRecordings()[0], 0, 2);
+            requireRange(scenario.packet_sink.getRecordings()[1], 5, 6);
+            requireTimestampLog(scenario, "non_increasing_dts", 1, 2, true);
+        }
+        std::cout << "PASS: E06-T09 encerramento valida os restantes e finaliza os dois trechos validos.\n";
+        std::cout << "PASS: E06-T10 fluxo valido preservado pelos testes E03-T01, E03-T02 e E03-T10 acima.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

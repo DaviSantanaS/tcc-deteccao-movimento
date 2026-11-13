@@ -19,6 +19,7 @@ add_executable(
         src/detectors/MotionHysteresis.cpp
         src/recording/Mp4EventPacketSink.cpp
         src/recording/EventRecorder.cpp
+        src/recording/PacketTimestampCheck.cpp
         src/buffers/EncodedPacketQueue.cpp
         src/config/PreEventConfig.cpp
         src/config/EventRecordingConfig.cpp
@@ -48,6 +49,20 @@ target_link_libraries(
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(
+            packet_timestamp_check_tests
+            tests/packet_timestamp_check_tests.cpp
+            src/recording/PacketTimestampCheck.cpp
+    )
+
+    target_include_directories(
+            packet_timestamp_check_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(packet_timestamp_check_tests PRIVATE PkgConfig::LIBAVCODEC)
+    add_test(NAME packet_timestamp_check_tests COMMAND packet_timestamp_check_tests)
+
     add_executable(
             mp4_event_packet_sink_tests
             tests/mp4_event_packet_sink_tests.cpp
@@ -142,6 +157,7 @@ if(BUILD_TESTING)
             event_recorder_tests
             tests/event_recorder_tests.cpp
             src/recording/EventRecorder.cpp
+            src/recording/PacketTimestampCheck.cpp
             src/buffers/EncodedPacketQueue.cpp
             src/ffmpeg/AvPacket.cpp
     )

@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <ostream>
 #include <vector>
 
@@ -33,7 +34,11 @@ public:
 
 private:
     void openRecording();
-    void writePackets(std::vector<AvPacketPtr>&& encoded_packets);
+    std::size_t writePackets(
+        std::vector<AvPacketPtr>&& encoded_packets,
+        bool motion_active,
+        std::uint64_t decoded_frame_index
+    );
     void finalizeRecording();
 
     EncodedPacketQueue& encoded_packet_queue_;
@@ -45,4 +50,6 @@ private:
     std::size_t completed_recording_count_ = 0;
     RecordingState recording_state_ = RecordingState::idle;
     std::size_t post_remaining_packet_count_ = 0;
+    std::optional<std::int64_t> last_written_dts_;
+    std::uint64_t last_decoded_frame_index_ = 0;
 };
