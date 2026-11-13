@@ -32,7 +32,8 @@ tcc_ranges() {
 tcc_check_mp4() {
   local first_flags decode_error_lines counts
   first_flags=$(ffprobe -v error -select_streams v:0 -show_entries packet=flags -of csv=p=0 -read_intervals '%+#1' "$1" | head -n 1)
-  decode_error_lines=$(ffmpeg -v error -i "$1" -f null - 2>&1 | wc -l)
+  # Avisos do muxer null sobre a saida de descarte nao sao erros de decodificacao.
+  decode_error_lines=$(ffmpeg -v error -i "$1" -f null - 2>&1 | awk '!/^\[null @/ { error_count++ } END { print error_count + 0 }')
   counts=$(ffprobe -v error -select_streams v:0 -count_packets -count_frames -show_entries stream=nb_read_packets,nb_read_frames -of default=nw=1 "$1" | tr '\n' ' ')
   echo "MP4CHECK $(basename "$1") first_packet_flags=$first_flags decode_error_lines=$decode_error_lines $counts"
 }

@@ -17,7 +17,7 @@ public:
         std::filesystem::path output_directory,
         std::shared_ptr<const VideoStreamParameters> video_stream_parameters
     );
-    ~Mp4EventPacketSink() override = default;
+    ~Mp4EventPacketSink() noexcept override;
 
     Mp4EventPacketSink(const Mp4EventPacketSink&) = delete;
     Mp4EventPacketSink& operator=(const Mp4EventPacketSink&) = delete;
@@ -32,6 +32,8 @@ public:
     std::string getRecordingDescription() const override;
 
 private:
+    void releaseRecordingContexts() noexcept;
+
     // A destruicao inversa libera o contexto MP4 antes de fechar o I/O emprestado.
     AvOutputFileContextPtr output_io_context_;
     AvMp4OutputContextPtr mp4_output_context_;
@@ -39,4 +41,5 @@ private:
     std::shared_ptr<const VideoStreamParameters> video_stream_parameters_;
     std::filesystem::path current_output_file_path_;
     std::size_t written_packet_count_ = 0;
+    bool header_written_ = false;
 };

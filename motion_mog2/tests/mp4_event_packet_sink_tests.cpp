@@ -5,16 +5,23 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <new>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#include <sys/resource.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -64,6 +71,76 @@ public:
 private:
     std::filesystem::path directory_path_;
 };
+
+class ScopedStreamCapture {
+public:
+    explicit ScopedStreamCapture(std::ostream& output_stream) :
+        output_stream_(output_stream),
+        previous_buffer_(this->output_stream_.rdbuf(this->captured_stream_.rdbuf())) {
+    }
+
+    ~ScopedStreamCapture() {
+        this->output_stream_.rdbuf(this->previous_buffer_);
+    }
+
+    ScopedStreamCapture(const ScopedStreamCapture&) = delete;
+    ScopedStreamCapture& operator=(const ScopedStreamCapture&) = delete;
+
+    std::string getOutput() const {
+        return this->captured_stream_.str();
+    }
+
+private:
+    std::ostream& output_stream_;
+    std::ostringstream captured_stream_;
+    std::streambuf* previous_buffer_;
+};
+
+class ScopedFileWriteFailure {
+public:
+    ScopedFileWriteFailure() {
+        // Os logs capturados ficam em memoria; o limite bloqueia escritas no arquivo do trailer.
+        require(getrlimit(RLIMIT_FSIZE, &this->previous_limit_) == 0,
+                "Nao foi possivel consultar o limite de tamanho de arquivo.");
+        this->previous_handler_ = std::signal(SIGXFSZ, SIG_IGN);
+        require(this->previous_handler_ != SIG_ERR, "Nao foi possivel ignorar SIGXFSZ no teste.");
+        struct rlimit restricted_limit = this->previous_limit_;
+        restricted_limit.rlim_cur = 0;
+        if (setrlimit(RLIMIT_FSIZE, &restricted_limit) != 0) {
+            std::signal(SIGXFSZ, this->previous_handler_);
+            throw std::runtime_error("Nao foi possivel restringir escritas no teste.");
+        }
+    }
+
+    ~ScopedFileWriteFailure() {
+        (void)setrlimit(RLIMIT_FSIZE, &this->previous_limit_);
+        std::signal(SIGXFSZ, this->previous_handler_);
+    }
+
+    ScopedFileWriteFailure(const ScopedFileWriteFailure&) = delete;
+    ScopedFileWriteFailure& operator=(const ScopedFileWriteFailure&) = delete;
+
+private:
+    struct rlimit previous_limit_{};
+    void (*previous_handler_)(int) = SIG_DFL;
+};
+
+std::size_t countOpenFileDescriptors() {
+    std::size_t descriptor_count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+        (void)entry;
+        ++descriptor_count;
+    }
+    return descriptor_count;
+}
+
+std::string readFileContents(const std::filesystem::path& path) {
+    std::ifstream input_file(path, std::ios::binary);
+    require(input_file.is_open(), "Nao foi possivel abrir o arquivo para comparar os bytes.");
+    const std::string contents{std::istreambuf_iterator<char>(input_file), std::istreambuf_iterator<char>()};
+    require(!input_file.bad(), "Falha ao ler os bytes do arquivo.");
+    return contents;
+}
 
 std::shared_ptr<const VideoStreamParameters> makeStreamParameters() {
     constexpr std::array<unsigned char, 35> codec_extra_data{
@@ -137,6 +214,7 @@ void verifyPackets(const std::filesystem::path& recording_path, const std::vecto
 }  // namespace
 
 int main() {
+    static_assert(std::is_nothrow_destructible_v<Mp4EventPacketSink>, "O destrutor do sink deve ser noexcept.");
     try {
         const auto video_stream_parameters = makeStreamParameters();
         {
@@ -250,6 +328,140 @@ int main() {
             sink.finalizeRecording();
         }
         std::cout << "PASS: E02-T08 lotes de dois e tres somam cinco pacotes.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            std::filesystem::path recording_path;
+            {
+                Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+                sink.openRecording();
+                recording_path = sink.getRecordingDescription();
+                sink.writePackets(makePackets(0, 30));
+            }
+            verifyPackets(recording_path, makePackets(0, 30));
+            require(output_capture.getOutput().find("MP4_SAVED_AFTER_ERROR path=") != std::string::npos &&
+                        output_capture.getOutput().find("encoded_packets=30\n") != std::string::npos,
+                    "E04-T01: destrutor deve finalizar e registrar os trinta pacotes.");
+        }
+        std::cout << "PASS: E04-T01 destruicao finaliza trinta pacotes e registra MP4_SAVED_AFTER_ERROR.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            std::filesystem::path recording_path;
+            std::string finalized_contents;
+            {
+                Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+                sink.openRecording();
+                recording_path = sink.getRecordingDescription();
+                sink.writePackets(makePackets(0, 30));
+                sink.finalizeRecording();
+                finalized_contents = readFileContents(recording_path);
+            }
+            require(readFileContents(recording_path) == finalized_contents && output_capture.getOutput().empty(),
+                    "E04-T02: destrutor nao deve escrever nem registrar outro trailer apos finalizar.");
+        }
+        std::cout << "PASS: E04-T02 finalizacao explicita impede trailer duplicado e preserva todos os bytes.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            std::filesystem::path recording_path;
+            bool exception_propagated = false;
+            try {
+                Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+                sink.openRecording();
+                recording_path = sink.getRecordingDescription();
+                sink.writePackets(makePackets(0, 30));
+                auto invalid_packets = makePackets(30, 2);
+                invalid_packets.front()->dts = AV_NOPTS_VALUE;
+                sink.writePackets(std::move(invalid_packets));
+            } catch (const std::invalid_argument&) {
+                exception_propagated = true;
+            }
+            require(exception_propagated, "E04-T03: erro no segundo lote deve ser propagado.");
+            verifyPackets(recording_path, makePackets(0, 30));
+            require(output_capture.getOutput().find("MP4_SAVED_AFTER_ERROR path=") != std::string::npos,
+                    "E04-T03: desenrolar da pilha deve finalizar o primeiro lote.");
+        }
+        std::cout << "PASS: E04-T03 erro no segundo lote se propaga e conserva os trinta pacotes anteriores.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            std::filesystem::path recording_path;
+            {
+                Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+                sink.openRecording();
+                recording_path = sink.getRecordingDescription();
+            }
+            require(!std::filesystem::exists(recording_path) &&
+                        output_capture.getOutput().find("MP4_DISCARDED_EMPTY path=") != std::string::npos,
+                    "E04-T04: gravacao vazia deve ser removida e registrada.");
+        }
+        std::cout << "PASS: E04-T04 destruicao remove gravacao vazia e registra MP4_DISCARDED_EMPTY.\n";
+
+        {
+            ScopedStreamCapture output_capture(std::cout);
+            ScopedStreamCapture error_capture(std::cerr);
+            {
+                ScopedTemporaryDirectory directory;
+                {
+                    Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+                    sink.openRecording();
+                    sink.writePackets(makePackets(0, 30));
+                    std::filesystem::remove_all(directory.getDirectoryPath());
+                }
+                require(!std::filesystem::exists(directory.getDirectoryPath()),
+                        "E04-T05: diretorio deve ter sido removido antes da destruicao do sink.");
+            }
+            {
+                ScopedTemporaryDirectory directory;
+                const std::size_t initial_descriptor_count = countOpenFileDescriptors();
+                auto sink = std::make_unique<Mp4EventPacketSink>(directory.getDirectoryPath(), video_stream_parameters);
+                sink->openRecording();
+                sink->writePackets(makePackets(0, 30));
+                {
+                    ScopedFileWriteFailure write_failure;
+                    sink.reset();
+                }
+                require(countOpenFileDescriptors() == initial_descriptor_count,
+                        "E04-T05: destrutor com falha de trailer deve liberar o descritor.");
+            }
+            require(error_capture.getOutput().find("[erro] MP4_FINALIZE_FAILED path=") != std::string::npos,
+                    "E04-T05: falha real do trailer deve ser registrada sem escapar do destrutor.");
+        }
+        std::cout << "PASS: E04-T05 destrutor nao lanca com diretorio removido nem com falha real de escrita.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            ScopedStreamCapture error_capture(std::cerr);
+            const std::size_t initial_descriptor_count = countOpenFileDescriptors();
+            {
+                Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+                sink.openRecording();
+                sink.writePackets(makePackets(0, 30));
+                bool trailer_failure_propagated = false;
+                {
+                    ScopedFileWriteFailure write_failure;
+                    try {
+                        sink.finalizeRecording();
+                    } catch (const std::runtime_error& error) {
+                        trailer_failure_propagated = std::string(error.what()).find("erro -") != std::string::npos;
+                        require(!sink.checkIfRecordingIsOpen() &&
+                                    countOpenFileDescriptors() == initial_descriptor_count,
+                                "E04-ADENDO: contextos devem estar liberados antes de a excecao chegar ao chamador.");
+                    }
+                }
+                require(trailer_failure_propagated && !sink.checkIfRecordingIsOpen(),
+                        "E04-ADENDO: falha real do trailer deve se propagar com gravacao fechada.");
+            }
+            require(output_capture.getOutput().empty() && error_capture.getOutput().empty(),
+                    "E04-ADENDO: destrutor nao deve tentar outro trailer depois da falha explicita.");
+        }
+        std::cout << "PASS: E04-ADENDO falha do trailer fecha o sink antes de propagar, sem nova tentativa no destrutor.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

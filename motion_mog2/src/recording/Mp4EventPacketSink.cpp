@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <ctime>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -50,16 +51,48 @@ Mp4EventPacketSink::Mp4EventPacketSink(
     video_stream_parameters_(std::move(video_stream_parameters)) {
 }
 
+Mp4EventPacketSink::~Mp4EventPacketSink() noexcept {
+    if (!this->checkIfRecordingIsOpen() || !this->header_written_) {
+        return;
+    }
+    try {
+        if (this->written_packet_count_ == 0) {
+            this->releaseRecordingContexts();
+            std::filesystem::remove(this->current_output_file_path_);
+            std::cout << "MP4_DISCARDED_EMPTY path=" << this->current_output_file_path_ << std::endl;
+        } else {
+            this->finalizeRecording();
+            std::cout << "MP4_SAVED_AFTER_ERROR path=" << this->current_output_file_path_
+                      << " encoded_packets=" << this->written_packet_count_ << std::endl;
+        }
+    } catch (const std::exception& error) {
+        try {
+            std::cerr << "[erro] MP4_FINALIZE_FAILED path=" << this->current_output_file_path_
+                      << " reason=" << error.what() << std::endl;
+        } catch (...) {
+            // Uma falha no proprio log tambem nao pode escapar do destrutor.
+        }
+    } catch (...) {
+        try {
+            std::cerr << "[erro] MP4_FINALIZE_FAILED path=" << this->current_output_file_path_
+                      << " reason=excecao desconhecida" << std::endl;
+        } catch (...) {
+        }
+    }
+}
+
 void Mp4EventPacketSink::openRecording() {
     if (this->checkIfRecordingIsOpen()) {
         throw std::logic_error("Ja existe uma gravacao MP4 aberta.");
     }
+    this->header_written_ = false;
     this->current_output_file_path_ = buildRecordingFilePath(this->output_directory_);
     this->mp4_output_context_ = allocateMp4OutputContext();
     this->mp4_output_context_->avoid_negative_ts = AVFMT_AVOID_NEG_TS_MAKE_ZERO;
     (void)createMp4VideoStream(*this->mp4_output_context_, *this->video_stream_parameters_);
     this->output_io_context_ = openOutputFile(this->current_output_file_path_);
     writeMp4Header(*this->mp4_output_context_, this->output_io_context_);
+    this->header_written_ = true;
     this->written_packet_count_ = 0;
 }
 
@@ -83,9 +116,21 @@ void Mp4EventPacketSink::finalizeRecording() {
     if (!this->checkIfRecordingIsOpen()) {
         throw std::logic_error("Nao existe uma gravacao MP4 aberta para finalizar.");
     }
-    writeMp4Trailer(*this->mp4_output_context_);
+    try {
+        writeMp4Trailer(*this->mp4_output_context_);
+    } catch (...) {
+        // Fecha os dois contextos e limpa header_written_ antes do rethrow:
+        // o destrutor ve o sink fechado e nao tenta escrever outro trailer.
+        this->releaseRecordingContexts();
+        throw;
+    }
+    this->releaseRecordingContexts();
+}
+
+void Mp4EventPacketSink::releaseRecordingContexts() noexcept {
     this->mp4_output_context_.reset();
     this->output_io_context_.reset();
+    this->header_written_ = false;
 }
 
 bool Mp4EventPacketSink::checkIfRecordingIsOpen() const {
