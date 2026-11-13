@@ -24,7 +24,8 @@ public:
     explicit FfmpegEncodedVideoSource(
         const std::string& input_source,
         const std::string& rtsp_transport = "tcp",
-        const std::atomic<bool>* keep_running = nullptr
+        const std::atomic<bool>* keep_running = nullptr,
+        std::size_t maximum_uncounted_packet_count = 0
     );
 
     cv::cudacodec::FormatInfo format() const override;
@@ -47,6 +48,7 @@ public:
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
     EncodedPacketQueue& getEncodedPacketQueue();
     PacketReadEnd getPacketReadEnd() const;
+    std::size_t getMaximumUncountedPacketCount() const;
 
     FfmpegEncodedVideoSource(const FfmpegEncodedVideoSource&) = delete;
     FfmpegEncodedVideoSource& operator=(const FfmpegEncodedVideoSource&) = delete;
@@ -84,4 +86,5 @@ private:
     std::atomic<PacketReadEndReason> packet_read_end_reason_{PacketReadEndReason::not_ended};
     std::atomic<int> packet_read_end_error_code_{0};
     const std::atomic<bool>* keep_running_ = nullptr;
+    std::size_t maximum_uncounted_packet_count_ = 0;
 };

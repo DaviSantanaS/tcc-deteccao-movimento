@@ -32,6 +32,7 @@ public:
 
     std::size_t getCountedPacketCount() const;
     std::size_t getQueuedPacketCount() const;
+    std::size_t getUncountedPacketCount() const;
 
     std::size_t discardCountedPacketsBeforeFirstKeyframe();
     std::size_t trimCountedPackets(

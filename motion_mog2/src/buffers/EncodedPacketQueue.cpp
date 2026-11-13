@@ -47,6 +47,11 @@ std::size_t EncodedPacketQueue::getQueuedPacketCount() const {
     return this->encoded_packets_.size();
 }
 
+std::size_t EncodedPacketQueue::getUncountedPacketCount() const {
+    std::lock_guard<std::mutex> lock(this->queue_mutex_);
+    return this->encoded_packets_.size() - this->counted_packet_count_;
+}
+
 std::size_t EncodedPacketQueue::discardCountedPacketsBeforeFirstKeyframe() {
     std::lock_guard<std::mutex> lock(this->queue_mutex_);
     return this->discardLeadingNonKeyframes();

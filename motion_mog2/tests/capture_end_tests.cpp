@@ -24,10 +24,10 @@ void requireEnd(PacketReadEnd packet_read_end, bool source_is_live, bool interru
 
 int main() {
     try {
-        constexpr std::array<PacketReadEndReason, 5> reasons{
+        constexpr std::array<PacketReadEndReason, 6> reasons{
             PacketReadEndReason::not_ended, PacketReadEndReason::end_of_stream,
             PacketReadEndReason::interrupted, PacketReadEndReason::read_error,
-            PacketReadEndReason::packet_preparation_error
+            PacketReadEndReason::packet_preparation_error, PacketReadEndReason::decoder_stalled
         };
         for (const auto reason : reasons) {
             for (const bool source_is_live : {false, true}) {
@@ -51,6 +51,11 @@ int main() {
         std::cout << "PASS: E07-T05 erro de preparo retorna packet_error e codigo 5.\n";
         requireEnd({}, false, false, CaptureEndReason::read_error, 4, "read_error");
         std::cout << "PASS: E07-T06 fim sem motivo retorna read_error e codigo 4.\n";
+        for (const bool source_is_live : {false, true}) {
+            requireEnd({PacketReadEndReason::decoder_stalled, 0}, source_is_live, false,
+                       CaptureEndReason::decoder_stalled, 6, "decoder_stalled");
+        }
+        std::cout << "PASS: E09-T03 decoder_stalled retorna codigo 6; sinal continua prevalecendo.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
         return 1;

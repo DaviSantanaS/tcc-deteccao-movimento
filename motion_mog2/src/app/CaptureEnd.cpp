@@ -11,6 +11,8 @@ CaptureEndReason classifyCaptureEnd(PacketReadEnd packet_read_end, bool source_i
             return CaptureEndReason::interrupted;
         case PacketReadEndReason::packet_preparation_error:
             return CaptureEndReason::packet_error;
+        case PacketReadEndReason::decoder_stalled:
+            return CaptureEndReason::decoder_stalled;
         case PacketReadEndReason::read_error:
         case PacketReadEndReason::not_ended:
             return CaptureEndReason::read_error;
@@ -29,6 +31,8 @@ int getExitCodeForCaptureEnd(CaptureEndReason capture_end_reason) {
             return 4;
         case CaptureEndReason::packet_error:
             return 5;
+        case CaptureEndReason::decoder_stalled:
+            return 6;
     }
     return 4;
 }
@@ -45,6 +49,8 @@ const char* getCaptureEndReasonName(CaptureEndReason capture_end_reason) {
             return "read_error";
         case CaptureEndReason::packet_error:
             return "packet_error";
+        case CaptureEndReason::decoder_stalled:
+            return "decoder_stalled";
     }
     return "read_error";
 }

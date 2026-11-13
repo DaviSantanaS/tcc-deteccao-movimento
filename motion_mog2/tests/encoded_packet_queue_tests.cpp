@@ -343,6 +343,29 @@ int main() {
             }
         }
         std::cout << "PASS: produtor e consumidor concorrentes sem perda nem duplicacao.\n";
+
+        {
+            EncodedPacketQueue encoded_packet_queue;
+            require(encoded_packet_queue.getUncountedPacketCount() == 0, "Fila vazia nao tem pacotes a frente.");
+            pushPattern(encoded_packet_queue, "Kpppp", 0);
+            require(encoded_packet_queue.getUncountedPacketCount() == 5, "Cinco pacotes inseridos ficam a frente.");
+            encoded_packet_queue.advanceCountedPackets(2);
+            require(encoded_packet_queue.getUncountedPacketCount() == 3, "Contabilizar dois deixa tres a frente.");
+            requireIds(encoded_packet_queue.takeCountedPackets(), 0, 2, "Retirada deve preservar os dois contabilizados");
+            require(encoded_packet_queue.getUncountedPacketCount() == 3, "Retirar contabilizados nao muda a regiao a frente.");
+            encoded_packet_queue.pushPacket(makeSyntheticPacket(5, false));
+            require(encoded_packet_queue.getUncountedPacketCount() == 4, "Nova insercao soma um pacote a frente.");
+        }
+        std::cout << "PASS: E09-T01 regiao a frente segue 5, 3, 3, 4 ao inserir, contabilizar e retirar.\n";
+
+        {
+            EncodedPacketQueue encoded_packet_queue;
+            pushPattern(encoded_packet_queue, "Kppp", 0);
+            require(encoded_packet_queue.getUncountedPacketCount() == 4, "Preparo deve ter quatro pacotes a frente.");
+            requireIds(encoded_packet_queue.takeAllPackets(), 0, 4, "takeAllPackets deve preservar os quatro pacotes");
+            require(encoded_packet_queue.getUncountedPacketCount() == 0, "takeAllPackets deve zerar a regiao a frente.");
+        }
+        std::cout << "PASS: E09-T02 takeAllPackets zera a regiao a frente.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

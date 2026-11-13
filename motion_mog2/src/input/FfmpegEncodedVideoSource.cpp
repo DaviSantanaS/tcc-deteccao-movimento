@@ -42,11 +42,24 @@ void FfmpegEncodedVideoSource::AvFormatContextDeleter::operator()(
 FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(
     const std::string& input_source,
     const std::string& rtsp_transport,
-    const std::atomic<bool>* keep_running
+    const std::atomic<bool>* keep_running,
+    std::size_t maximum_uncounted_packet_count
 )
-    : current_encoded_packet_(allocateAvPacket()), keep_running_(keep_running) {
+    : current_encoded_packet_(allocateAvPacket()), keep_running_(keep_running),
+      maximum_uncounted_packet_count_(maximum_uncounted_packet_count) {
     this->openInputAndSelectVideoStream(input_source, rtsp_transport, keep_running);
     this->initializeVideoFormat();
+    if (this->maximum_uncounted_packet_count_ == 0) {
+        // Os 40 s sao duas vezes o GOP suposto de 20 s no main. Na partida da sessao,
+        // a regiao a frente cresce legitimamente ate o primeiro keyframe: os pacotes
+        // anteriores a ele nao geram quadro e nao sao contabilizados. O teto precisa
+        // ficar acima de um GOP inteiro para nao disparar nesse periodo.
+        constexpr double maximum_uncounted_seconds = 40.0;
+        constexpr std::size_t decoder_surface_margin_packet_count = 32;
+        this->maximum_uncounted_packet_count_ = static_cast<std::size_t>(
+            std::ceil(this->video_format_.fps * maximum_uncounted_seconds)
+        ) + decoder_surface_margin_packet_count;
+    }
     this->video_stream_parameters_ = std::make_shared<const VideoStreamParameters>(
         *this->encoded_video_stream_->codecpar,
         this->encoded_video_stream_->time_base
@@ -69,6 +82,10 @@ EncodedPacketQueue& FfmpegEncodedVideoSource::getEncodedPacketQueue() {
 
 PacketReadEnd FfmpegEncodedVideoSource::getPacketReadEnd() const {
     return {this->packet_read_end_reason_.load(), this->packet_read_end_error_code_.load()};
+}
+
+std::size_t FfmpegEncodedVideoSource::getMaximumUncountedPacketCount() const {
+    return this->maximum_uncounted_packet_count_;
 }
 
 void FfmpegEncodedVideoSource::recordPacketReadEnd(PacketReadEndReason reason, int ffmpeg_error_code) {
@@ -315,6 +332,14 @@ bool FfmpegEncodedVideoSource::getNextPacket(
                 CV_LOG_ERROR(nullptr,
                     "O filtro H.264 deve produzir um pacote valido por entrada para manter a contagem raw do OpenCV.");
                 this->recordPacketReadEnd(PacketReadEndReason::packet_preparation_error, 0);
+                return false;
+            }
+
+            const std::size_t uncounted_packet_count = this->encoded_packet_queue_.getUncountedPacketCount();
+            if (uncounted_packet_count >= this->maximum_uncounted_packet_count_) {
+                CV_LOG_ERROR(nullptr, "Regiao a frente da fronteira atingiu " << uncounted_packet_count
+                    << " pacotes sem contabilizacao pelo decoder; leitura encerrada.");
+                this->recordPacketReadEnd(PacketReadEndReason::decoder_stalled, 0);
                 return false;
             }
 

@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <iostream>
@@ -463,6 +464,55 @@ int main(int argument_count, char** argument_values) {
             }
         }
         std::cout << "PASS: E07-T08 adicional interrupcao apos tres pacotes preserva o tamanho da fila.\n";
+
+        {
+            FfmpegEncodedVideoSource video_source(argument_values[1], "tcp", nullptr, 10);
+            unsigned char* packet_data = nullptr;
+            std::size_t packet_size = 0;
+            for (std::size_t packet_index = 0; packet_index < 10; ++packet_index) {
+                if (!video_source.getNextPacket(&packet_data, &packet_size)) {
+                    throw std::runtime_error("E09-T04: os dez primeiros pacotes devem ser entregues.");
+                }
+            }
+            if (video_source.getNextPacket(&packet_data, &packet_size) || packet_data != nullptr || packet_size != 0) {
+                throw std::runtime_error("E09-T04: a decima primeira chamada deve parar a leitura sem entregar dados.");
+            }
+            const PacketReadEnd packet_read_end = video_source.getPacketReadEnd();
+            if (packet_read_end.reason != PacketReadEndReason::decoder_stalled || packet_read_end.ffmpeg_error_code != 0 ||
+                video_source.getMaximumUncountedPacketCount() != 10 ||
+                video_source.getEncodedPacketQueue().getQueuedPacketCount() != 10 ||
+                video_source.getEncodedPacketQueue().getUncountedPacketCount() != 10) {
+                throw std::runtime_error("E09-T04: deve registrar decoder_stalled e preservar os dez pacotes na fila.");
+            }
+        }
+        std::cout << "PASS: E09-T04 limite 10 aceita dez pacotes e rejeita o seguinte sem alterar a fila.\n";
+
+        {
+            FfmpegEncodedVideoSource video_source(argument_values[1], "tcp", nullptr, 10);
+            unsigned char* packet_data = nullptr;
+            std::size_t packet_size = 0;
+            for (std::size_t packet_index = 0; packet_index < 100; ++packet_index) {
+                if (!video_source.getNextPacket(&packet_data, &packet_size)) {
+                    throw std::runtime_error("E09-T05: avancar a fronteira deve impedir disparo do teto.");
+                }
+                video_source.getEncodedPacketQueue().advanceCountedPackets(1);
+            }
+            if (video_source.getPacketReadEnd().reason != PacketReadEndReason::not_ended ||
+                video_source.getEncodedPacketQueue().getUncountedPacketCount() != 0 ||
+                video_source.getEncodedPacketQueue().getQueuedPacketCount() != 100) {
+                throw std::runtime_error("E09-T05: o teto deve medir somente pacotes nao contabilizados.");
+            }
+        }
+        std::cout << "PASS: E09-T05 cem leituras com avanco da fronteira nao disparam o teto.\n";
+
+        {
+            FfmpegEncodedVideoSource video_source(argument_values[1]);
+            const std::size_t expected_limit = static_cast<std::size_t>(std::ceil(video_source.format().fps * 40.0)) + 32;
+            if (video_source.getMaximumUncountedPacketCount() != expected_limit) {
+                throw std::runtime_error("E09-T06: limite derivado deve ser ceil(fps * 40) + 32.");
+            }
+            std::cout << "PASS: E09-T06 limite derivado ceil(fps * 40) + 32 = " << expected_limit << ".\n";
+        }
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
