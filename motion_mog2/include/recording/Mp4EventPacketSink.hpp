@@ -30,6 +30,7 @@ public:
     bool checkIfRecordingIsOpen() const override;
     std::size_t getWrittenPacketCount() const override;
     std::string getRecordingDescription() const override;
+    std::size_t getRecordingsStartedWithoutIdrCount() const;
 
 private:
     void releaseRecordingContexts() noexcept;
@@ -41,5 +42,7 @@ private:
     std::shared_ptr<const VideoStreamParameters> video_stream_parameters_;
     std::filesystem::path current_output_file_path_;
     std::size_t written_packet_count_ = 0;
+    std::size_t recordings_started_without_idr_count_ = 0;
+    bool first_packet_checked_ = false;
     bool header_written_ = false;
 };

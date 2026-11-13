@@ -145,25 +145,32 @@ std::string readFileContents(const std::filesystem::path& path) {
     return contents;
 }
 
-std::shared_ptr<const VideoStreamParameters> makeStreamParameters() {
+std::shared_ptr<const VideoStreamParameters> makeStreamParameters(bool annex_b = false) {
     constexpr std::array<unsigned char, 35> codec_extra_data{
         0x01, 0x64, 0x00, 0x2a, 0xff, 0xe1, 0x00, 0x13, 0x67, 0x64, 0x00, 0x2a,
         0xac, 0xb4, 0x03, 0xc0, 0x11, 0x3f, 0x2c, 0x94, 0x04, 0x04, 0x04, 0x1b,
         0x42, 0x84, 0xd4, 0x01, 0x00, 0x05, 0x68, 0xee, 0x06, 0xf2, 0xc0
     };
+    std::vector<unsigned char> selected_extra_data(codec_extra_data.begin(), codec_extra_data.end());
+    if (annex_b) {
+        selected_extra_data = {0, 0, 0, 1};
+        selected_extra_data.insert(selected_extra_data.end(), codec_extra_data.begin() + 8, codec_extra_data.begin() + 27);
+        selected_extra_data.insert(selected_extra_data.end(), {0, 0, 0, 1});
+        selected_extra_data.insert(selected_extra_data.end(), codec_extra_data.begin() + 30, codec_extra_data.end());
+    }
     auto codec_parameters = allocateAvCodecParameters();
     codec_parameters->codec_type = AVMEDIA_TYPE_VIDEO;
     codec_parameters->codec_id = AV_CODEC_ID_H264;
     codec_parameters->width = 1920;
     codec_parameters->height = 1080;
     codec_parameters->extradata = static_cast<unsigned char*>(
-        av_mallocz(codec_extra_data.size() + AV_INPUT_BUFFER_PADDING_SIZE)
+        av_mallocz(selected_extra_data.size() + AV_INPUT_BUFFER_PADDING_SIZE)
     );
     if (!codec_parameters->extradata) {
         throw std::bad_alloc{};
     }
-    codec_parameters->extradata_size = static_cast<int>(codec_extra_data.size());
-    std::copy(codec_extra_data.begin(), codec_extra_data.end(), codec_parameters->extradata);
+    codec_parameters->extradata_size = static_cast<int>(selected_extra_data.size());
+    std::copy(selected_extra_data.begin(), selected_extra_data.end(), codec_parameters->extradata);
     return std::make_shared<const VideoStreamParameters>(*codec_parameters, AVRational{1, 90000});
 }
 
@@ -186,6 +193,28 @@ std::vector<AvPacketPtr> makePackets(int first_packet_index, int packet_count, i
         encoded_packets.push_back(std::move(packet));
     }
     return encoded_packets;
+}
+
+std::vector<AvPacketPtr> makeObservedPackets(bool annex_b, bool contains_idr, int first_packet_index, int packet_count) {
+    auto packets = makePackets(first_packet_index, packet_count);
+    for (const auto& packet : packets) {
+        if (annex_b) {
+            packet->data[3] = 1;
+        }
+        packet->data[4] = contains_idr ? 0x65 : 0x41;
+    }
+    return packets;
+}
+
+std::size_t countCutPointLogs(const std::string& log) {
+    std::istringstream lines(log);
+    std::size_t count = 0;
+    for (std::string line; std::getline(lines, line);) {
+        if (line.rfind("CUT_POINT_WITHOUT_IDR ", 0) == 0) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 struct AvInputContextDeleter {
@@ -592,6 +621,104 @@ int main() {
             }
         }
         std::cout << "PASS: E05-T04 quatro mortes por SIGKILL comparam recuperacao por GOP e por duracao.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+            sink.openRecording();
+            const std::filesystem::path path = sink.getRecordingDescription();
+            sink.writePackets(makeObservedPackets(false, true, 0, 2));
+            sink.finalizeRecording();
+            require(output_capture.getOutput().empty() && sink.getRecordingsStartedWithoutIdrCount() == 0,
+                    "E11-T01: IDR inicial nao deve gerar log nem incrementar o contador.");
+            verifyPackets(path, makeObservedPackets(false, true, 0, 2));
+        }
+        std::cout << "PASS: E11-T01 IDR inicial nao gera log nem incrementa o contador.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+            sink.openRecording();
+            const std::filesystem::path path = sink.getRecordingDescription();
+            sink.writePackets(makeObservedPackets(false, false, 60, 2));
+            sink.finalizeRecording();
+            std::ostringstream expected_log;
+            expected_log << "CUT_POINT_WITHOUT_IDR path=" << path
+                         << " first_packet_pts=180000 first_packet_dts=180000\n";
+            require(output_capture.getOutput() == expected_log.str() && sink.getRecordingsStartedWithoutIdrCount() == 1,
+                    "E11-T02: keyframe sem IDR deve gerar uma linha com caminho e carimbos originais.");
+            verifyPackets(path, makeObservedPackets(false, false, 60, 2));
+        }
+        std::cout << "PASS: E11-T02 keyframe sem IDR e gravado com log de caminho e carimbos originais.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+            sink.openRecording();
+            const std::filesystem::path path = sink.getRecordingDescription();
+            sink.writePackets(makeObservedPackets(false, false, 60, 2));
+            sink.writePackets(makeObservedPackets(false, false, 62, 1));
+            sink.writePackets(makeObservedPackets(false, false, 63, 2));
+            sink.finalizeRecording();
+            require(countCutPointLogs(output_capture.getOutput()) == 1 && sink.getRecordingsStartedWithoutIdrCount() == 1,
+                    "E11-T03: tres lotes do mesmo arquivo devem gerar uma unica linha.");
+            verifyPackets(path, makeObservedPackets(false, false, 60, 5));
+        }
+        std::cout << "PASS: E11-T03 tres lotes geram somente uma linha por arquivo.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+            for (const bool contains_idr : {false, false, true}) {
+                sink.openRecording();
+                const std::filesystem::path path = sink.getRecordingDescription();
+                sink.writePackets(makeObservedPackets(false, contains_idr, 0, 1));
+                sink.finalizeRecording();
+                verifyPackets(path, makeObservedPackets(false, contains_idr, 0, 1));
+            }
+            require(countCutPointLogs(output_capture.getOutput()) == 2 && sink.getRecordingsStartedWithoutIdrCount() == 2,
+                    "E11-T04: contador deve acumular duas gravacoes sem IDR entre tres arquivos.");
+        }
+        std::cout << "PASS: E11-T04 contador acumula duas gravacoes sem IDR e ignora a gravacao com IDR.\n";
+
+        {
+            for (const bool annex_b : {false, true}) {
+                const auto parameters = makeStreamParameters(annex_b);
+                for (const bool contains_idr : {false, true}) {
+                    ScopedTemporaryDirectory directory;
+                    ScopedStreamCapture output_capture(std::cout);
+                    Mp4EventPacketSink sink(directory.getDirectoryPath(), parameters);
+                    sink.openRecording();
+                    const std::filesystem::path path = sink.getRecordingDescription();
+                    sink.writePackets(makeObservedPackets(annex_b, contains_idr, 0, 2));
+                    sink.finalizeRecording();
+                    const std::size_t expected_count = contains_idr ? 0 : 1;
+                    require(countCutPointLogs(output_capture.getOutput()) == expected_count &&
+                                sink.getRecordingsStartedWithoutIdrCount() == expected_count && countRecoveredPackets(path) == 2,
+                            "E11-T05: observacao deve funcionar em Annex B e AVCC sem impedir gravacao.");
+                }
+            }
+        }
+        std::cout << "PASS: E11-T05 Annex B e AVCC mantem a gravacao com a mesma classificacao de IDR.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            ScopedStreamCapture output_capture(std::cout);
+            Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+            sink.openRecording();
+            sink.writePackets({});
+            require(output_capture.getOutput().empty() && sink.getRecordingsStartedWithoutIdrCount() == 0,
+                    "E11-T06: lote vazio nao deve consumir a verificacao inicial.");
+            sink.writePackets(makeObservedPackets(false, false, 60, 1));
+            sink.finalizeRecording();
+            require(countCutPointLogs(output_capture.getOutput()) == 1 && sink.getRecordingsStartedWithoutIdrCount() == 1,
+                    "E11-T06: primeiro lote nao vazio deve ser observado apos o lote vazio.");
+        }
+        std::cout << "PASS: E11-T06 lote vazio preserva a verificacao do primeiro lote nao vazio.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

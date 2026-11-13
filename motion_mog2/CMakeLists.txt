@@ -19,6 +19,7 @@ add_executable(
         src/detectors/Mog2MotionDetector.cpp
         src/detectors/MotionHysteresis.cpp
         src/recording/Mp4EventPacketSink.cpp
+        src/ffmpeg/H264NalUnits.cpp
         src/recording/EventRecorder.cpp
         src/recording/PacketTimestampCheck.cpp
         src/buffers/EncodedPacketQueue.cpp
@@ -105,6 +106,7 @@ if(BUILD_TESTING)
             mp4_event_packet_sink_tests
             tests/mp4_event_packet_sink_tests.cpp
             src/recording/Mp4EventPacketSink.cpp
+            src/ffmpeg/H264NalUnits.cpp
             src/ffmpeg/AvOutputFileContext.cpp
             src/ffmpeg/AvMp4OutputContext.cpp
             src/ffmpeg/AvPacket.cpp

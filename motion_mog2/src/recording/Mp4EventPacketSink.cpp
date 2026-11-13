@@ -1,4 +1,5 @@
 #include "recording/Mp4EventPacketSink.hpp"
+#include "ffmpeg/H264NalUnits.hpp"
 
 #include <array>
 #include <chrono>
@@ -106,6 +107,7 @@ void Mp4EventPacketSink::openRecording() {
     writeMp4Header(*this->mp4_output_context_, this->output_io_context_);
     this->header_written_ = true;
     this->written_packet_count_ = 0;
+    this->first_packet_checked_ = false;
 }
 
 void Mp4EventPacketSink::writePackets(std::vector<AvPacketPtr>&& encoded_packets) {
@@ -118,6 +120,16 @@ void Mp4EventPacketSink::writePackets(std::vector<AvPacketPtr>&& encoded_packets
     if (this->written_packet_count_ == 0 &&
         (!encoded_packets.front() || (encoded_packets.front()->flags & AV_PKT_FLAG_KEY) == 0)) {
         throw std::logic_error("O primeiro lote do MP4 deve comecar em keyframe.");
+    }
+    if (!this->first_packet_checked_) {
+        this->first_packet_checked_ = true;
+        const AVPacket& first_packet = *encoded_packets.front();
+        if (!checkIfH264PacketContainsNalUnitType(first_packet, *this->video_stream_parameters_->codec_parameters, 5)) {
+            ++this->recordings_started_without_idr_count_;
+            std::cout << "CUT_POINT_WITHOUT_IDR path=" << this->current_output_file_path_
+                      << " first_packet_pts=" << first_packet.pts
+                      << " first_packet_dts=" << first_packet.dts << std::endl;
+        }
     }
     const std::size_t packet_count = encoded_packets.size();
     writeMp4Packets(*this->mp4_output_context_, std::move(encoded_packets), this->video_stream_parameters_);
@@ -155,4 +167,8 @@ std::size_t Mp4EventPacketSink::getWrittenPacketCount() const {
 
 std::string Mp4EventPacketSink::getRecordingDescription() const {
     return this->current_output_file_path_.string();
+}
+
+std::size_t Mp4EventPacketSink::getRecordingsStartedWithoutIdrCount() const {
+    return this->recordings_started_without_idr_count_;
 }

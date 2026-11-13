@@ -177,7 +177,8 @@ int main(int argument_count, char** argument_values) {
         auto remaining_encoded_packets = video_reader.getEncodedPacketQueue().takeAllPackets();
         event_recorder.finishCapture(std::move(remaining_encoded_packets));
         std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.getDecodedFrameCount()
-                  << " saved_files=" << event_recorder.getCompletedRecordingCount() << "\n";
+                  << " saved_files=" << event_recorder.getCompletedRecordingCount()
+                  << " recordings_without_idr=" << packet_sink.getRecordingsStartedWithoutIdrCount() << "\n";
     } catch (const cv::Exception& error) {
         std::cerr << "[fatal] CUDA/NVDEC: " << error.what() << "\n";
         return 2;
