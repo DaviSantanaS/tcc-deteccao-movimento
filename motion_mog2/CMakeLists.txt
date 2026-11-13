@@ -51,6 +51,29 @@ include(CTest)
 
 if(BUILD_TESTING)
     add_executable(
+            h264_nal_units_tests
+            tests/h264_nal_units_tests.cpp
+            src/ffmpeg/H264NalUnits.cpp
+    )
+
+    target_include_directories(h264_nal_units_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(h264_nal_units_tests PRIVATE PkgConfig::LIBAVCODEC)
+    add_test(NAME h264_nal_units_tests COMMAND h264_nal_units_tests)
+
+    add_executable(
+            h264_cut_point_survey
+            tests/h264_cut_point_survey.cpp
+            src/ffmpeg/H264NalUnits.cpp
+            src/ffmpeg/AvPacket.cpp
+    )
+
+    target_include_directories(h264_cut_point_survey PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(
+            h264_cut_point_survey
+            PRIVATE PkgConfig::LIBAVFORMAT PkgConfig::LIBAVCODEC PkgConfig::LIBAVUTIL
+    )
+
+    add_executable(
             capture_end_tests
             tests/capture_end_tests.cpp
             src/app/CaptureEnd.cpp
