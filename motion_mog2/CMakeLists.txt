@@ -14,6 +14,7 @@ pkg_check_modules(LIBAVUTIL REQUIRED IMPORTED_TARGET libavutil)
 add_executable(
         motion_mog2
         src/main.cpp
+        src/app/CaptureEnd.cpp
         src/input/VideoStreamReader.cpp
         src/detectors/Mog2MotionDetector.cpp
         src/detectors/MotionHysteresis.cpp
@@ -49,6 +50,20 @@ target_link_libraries(
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(
+            capture_end_tests
+            tests/capture_end_tests.cpp
+            src/app/CaptureEnd.cpp
+    )
+
+    target_include_directories(
+            capture_end_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    target_link_libraries(capture_end_tests PRIVATE PkgConfig::LIBAVUTIL)
+    add_test(NAME capture_end_tests COMMAND capture_end_tests)
+
     add_executable(
             packet_timestamp_check_tests
             tests/packet_timestamp_check_tests.cpp

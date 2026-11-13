@@ -2,6 +2,7 @@
 
 #include "buffers/EncodedPacketQueue.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
+#include "input/PacketReadEnd.hpp"
 
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/core/cuda.hpp>
@@ -34,6 +35,9 @@ public:
     );
 
     void stopDecoding();
+
+    // Confiavel depois de stopDecoding(), que espera a thread de leitura terminar.
+    PacketReadEnd getPacketReadEnd() const;
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
     EncodedPacketQueue& getEncodedPacketQueue();

@@ -3,6 +3,7 @@
 #include "input/FfmpegEncodedVideoSource.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <iostream>
@@ -10,6 +11,10 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+extern "C" {
+#include <libavutil/error.h>
+}
 
 int main(int argument_count, char** argument_values) {
     if (argument_count != 2) {
@@ -153,6 +158,11 @@ int main(int argument_count, char** argument_values) {
             if (video_source.getNextPacket(nullptr, &invalid_call_packet_byte_count) ||
                 video_source.getNextPacket(&invalid_call_data, nullptr)) {
                 throw std::runtime_error("Argumentos nulos devem ser rejeitados sem consumir pacotes.");
+            }
+            const PacketReadEnd invalid_call_end = video_source.getPacketReadEnd();
+            if (invalid_call_end.reason != PacketReadEndReason::packet_preparation_error ||
+                invalid_call_end.ffmpeg_error_code != 0) {
+                throw std::runtime_error("A rejeicao de argumentos deve registrar erro de preparo sem codigo FFmpeg.");
             }
 
             for (std::size_t packet_index = 0; packet_index < original_packet_contents.size(); ++packet_index) {
@@ -389,6 +399,70 @@ int main(int argument_count, char** argument_values) {
         std::cout << "PASS: filtro H.264 inicializado, parametros independentes e entradas invalidas rejeitadas.\n";
         std::cout << "PASS: dois pacotes filtrados em Annex B, originais intactos e saida com vida util segura.\n";
         std::cout << "PASS: fonte entrega tres pacotes Annex B, preserva originais e extradata e mantem vida util segura.\n";
+
+        {
+            FfmpegEncodedVideoSource video_source(argument_values[1]);
+            if (video_source.getPacketReadEnd().reason != PacketReadEndReason::not_ended ||
+                video_source.getPacketReadEnd().ffmpeg_error_code != 0) {
+                throw std::runtime_error("A fonte deve iniciar sem motivo de encerramento.");
+            }
+            unsigned char* packet_data = nullptr;
+            std::size_t packet_size = 0;
+            while (video_source.getNextPacket(&packet_data, &packet_size)) {
+            }
+            const PacketReadEnd packet_read_end = video_source.getPacketReadEnd();
+            if (packet_read_end.reason != PacketReadEndReason::end_of_stream ||
+                packet_read_end.ffmpeg_error_code != AVERROR_EOF) {
+                throw std::runtime_error("E07-T07: a fonte deve registrar fim de arquivo e AVERROR_EOF.");
+            }
+            if (video_source.getNextPacket(nullptr, &packet_size) ||
+                video_source.getPacketReadEnd().reason != PacketReadEndReason::end_of_stream ||
+                video_source.getPacketReadEnd().ffmpeg_error_code != AVERROR_EOF) {
+                throw std::runtime_error("A primeira causa deve prevalecer sobre falhas posteriores.");
+            }
+        }
+        std::cout << "PASS: E07-T07 fonte registra AVERROR_EOF e preserva a primeira causa.\n";
+
+        {
+            std::atomic<bool> keep_running{true};
+            FfmpegEncodedVideoSource video_source(argument_values[1], "tcp", &keep_running);
+            keep_running.store(false);
+            unsigned char* packet_data = nullptr;
+            std::size_t packet_size = 0;
+            if (video_source.getNextPacket(&packet_data, &packet_size)) {
+                throw std::runtime_error("E07-T08: nao deve entregar pacote apos interrupcao.");
+            }
+            const PacketReadEnd packet_read_end = video_source.getPacketReadEnd();
+            if (packet_read_end.reason != PacketReadEndReason::interrupted ||
+                packet_read_end.ffmpeg_error_code != AVERROR_EXIT) {
+                throw std::runtime_error("E07-T08: motivo ou codigo inesperado ao interromper a leitura.");
+            }
+        }
+        std::cout << "PASS: E07-T08 leitura interrompida retorna falso e registra AVERROR_EXIT.\n";
+
+        {
+            std::atomic<bool> keep_running{true};
+            FfmpegEncodedVideoSource video_source(argument_values[1], "tcp", &keep_running);
+            unsigned char* packet_data = nullptr;
+            std::size_t packet_size = 0;
+            for (std::size_t packet_index = 0; packet_index < 3; ++packet_index) {
+                if (!video_source.getNextPacket(&packet_data, &packet_size)) {
+                    throw std::runtime_error("A fonte deve entregar os tres pacotes anteriores a interrupcao.");
+                }
+            }
+            const std::size_t queued_packet_count = video_source.getEncodedPacketQueue().getQueuedPacketCount();
+            keep_running.store(false);
+            if (video_source.getNextPacket(&packet_data, &packet_size) || packet_data != nullptr || packet_size != 0) {
+                throw std::runtime_error("A chamada interrompida nao deve entregar dados ao NVDEC.");
+            }
+            const PacketReadEnd packet_read_end = video_source.getPacketReadEnd();
+            if (packet_read_end.reason != PacketReadEndReason::interrupted ||
+                packet_read_end.ffmpeg_error_code != AVERROR_EXIT || queued_packet_count != 3 ||
+                video_source.getEncodedPacketQueue().getQueuedPacketCount() != queued_packet_count) {
+                throw std::runtime_error("A chamada interrompida deve registrar AVERROR_EXIT sem aumentar a fila.");
+            }
+        }
+        std::cout << "PASS: E07-T08 adicional interrupcao apos tres pacotes preserva o tamanho da fila.\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

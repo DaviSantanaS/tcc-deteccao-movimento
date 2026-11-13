@@ -100,6 +100,10 @@ void VideoStreamReader::stopDecoding() {
     this->nvdec_video_reader_.reset();
 }
 
+PacketReadEnd VideoStreamReader::getPacketReadEnd() const {
+    return this->ffmpeg_video_source_->getPacketReadEnd();
+}
+
 std::shared_ptr<const VideoStreamParameters>
 VideoStreamReader::getVideoStreamParameters() const {
     return this->ffmpeg_video_source_->getVideoStreamParameters();

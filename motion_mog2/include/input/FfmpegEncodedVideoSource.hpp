@@ -5,6 +5,7 @@
 #include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/EncodedVideoPackets.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
+#include "input/PacketReadEnd.hpp"
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -45,6 +46,7 @@ public:
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
     EncodedPacketQueue& getEncodedPacketQueue();
+    PacketReadEnd getPacketReadEnd() const;
 
     FfmpegEncodedVideoSource(const FfmpegEncodedVideoSource&) = delete;
     FfmpegEncodedVideoSource& operator=(const FfmpegEncodedVideoSource&) = delete;
@@ -66,6 +68,7 @@ private:
     );
     void initializeVideoFormat();
     void copyVideoCodecExtraData();
+    void recordPacketReadEnd(PacketReadEndReason reason, int ffmpeg_error_code);
 
     AvFormatContextPtr video_source_context_;
     AvPacketPtr current_encoded_packet_;
@@ -78,4 +81,7 @@ private:
     AvBitstreamFilterPtr annex_b_filter_for_nvdec_;
 
     EncodedPacketQueue encoded_packet_queue_;
+    std::atomic<PacketReadEndReason> packet_read_end_reason_{PacketReadEndReason::not_ended};
+    std::atomic<int> packet_read_end_error_code_{0};
+    const std::atomic<bool>* keep_running_ = nullptr;
 };

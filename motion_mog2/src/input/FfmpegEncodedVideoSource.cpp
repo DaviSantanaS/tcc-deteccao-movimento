@@ -44,7 +44,7 @@ FfmpegEncodedVideoSource::FfmpegEncodedVideoSource(
     const std::string& rtsp_transport,
     const std::atomic<bool>* keep_running
 )
-    : current_encoded_packet_(allocateAvPacket()) {
+    : current_encoded_packet_(allocateAvPacket()), keep_running_(keep_running) {
     this->openInputAndSelectVideoStream(input_source, rtsp_transport, keep_running);
     this->initializeVideoFormat();
     this->video_stream_parameters_ = std::make_shared<const VideoStreamParameters>(
@@ -65,6 +65,18 @@ FfmpegEncodedVideoSource::getVideoStreamParameters() const {
 
 EncodedPacketQueue& FfmpegEncodedVideoSource::getEncodedPacketQueue() {
     return this->encoded_packet_queue_;
+}
+
+PacketReadEnd FfmpegEncodedVideoSource::getPacketReadEnd() const {
+    return {this->packet_read_end_reason_.load(), this->packet_read_end_error_code_.load()};
+}
+
+void FfmpegEncodedVideoSource::recordPacketReadEnd(PacketReadEndReason reason, int ffmpeg_error_code) {
+    // getNextPacket tem um unico escritor; publica o codigo antes do motivo e preserva a primeira causa.
+    if (this->packet_read_end_reason_.load() == PacketReadEndReason::not_ended) {
+        this->packet_read_end_error_code_.store(ffmpeg_error_code);
+        this->packet_read_end_reason_.store(reason);
+    }
 }
 
 void FfmpegEncodedVideoSource::openInputAndSelectVideoStream(
@@ -248,6 +260,7 @@ bool FfmpegEncodedVideoSource::getNextPacket(
     std::size_t* encoded_packet_size_bytes_for_nvdec
 ) {
     if (encoded_packet_data_for_nvdec == nullptr || encoded_packet_size_bytes_for_nvdec == nullptr) {
+        this->recordPacketReadEnd(PacketReadEndReason::packet_preparation_error, 0);
         return false;
     }
 
@@ -267,6 +280,19 @@ bool FfmpegEncodedVideoSource::getNextPacket(
         }
 
         if (packet_retrieval_status < 0) {
+            const PacketReadEndReason reason = packet_retrieval_status == AVERROR_EOF
+                ? PacketReadEndReason::end_of_stream
+                : packet_retrieval_status == AVERROR_EXIT
+                    ? PacketReadEndReason::interrupted : PacketReadEndReason::read_error;
+            this->recordPacketReadEnd(reason, packet_retrieval_status);
+            return false;
+        }
+
+        // FFmpeg n6.1, libavformat/utils.c:87-100: append_packet_chunked pode devolver
+        // sucesso com pacote truncado apos interrupcao; nao o envia ao filtro nem a fila.
+        if (this->keep_running_ != nullptr && !this->keep_running_->load()) {
+            av_packet_unref(this->current_encoded_packet_.get());
+            this->recordPacketReadEnd(PacketReadEndReason::interrupted, AVERROR_EXIT);
             return false;
         }
 
@@ -288,6 +314,7 @@ bool FfmpegEncodedVideoSource::getNextPacket(
                 encoded_packets_for_nvdec.front()->data == nullptr || encoded_packets_for_nvdec.front()->size <= 0) {
                 CV_LOG_ERROR(nullptr,
                     "O filtro H.264 deve produzir um pacote valido por entrada para manter a contagem raw do OpenCV.");
+                this->recordPacketReadEnd(PacketReadEndReason::packet_preparation_error, 0);
                 return false;
             }
 
@@ -300,6 +327,7 @@ bool FfmpegEncodedVideoSource::getNextPacket(
             return true;
         } catch (const std::exception& error) {
             CV_LOG_ERROR(nullptr, "Falha ao preparar o pacote para NVDEC: " << error.what());
+            this->recordPacketReadEnd(PacketReadEndReason::packet_preparation_error, 0);
             return false;
         }
     }

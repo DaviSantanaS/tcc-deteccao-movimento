@@ -1,3 +1,4 @@
+#include "app/CaptureEnd.hpp"
 #include "config/EventRecordingConfig.hpp"
 #include "config/PreEventConfig.hpp"
 #include "detectors/Mog2MotionDetector.hpp"
@@ -6,6 +7,10 @@
 #include "recording/Mp4EventPacketSink.hpp"
 
 #include <opencv2/core/cuda.hpp>
+
+extern "C" {
+#include <libavutil/error.h>
+}
 
 #include <atomic>
 #include <csignal>
@@ -16,6 +21,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 
 static_assert(std::atomic<bool>::is_always_lock_free, "O handler de sinal exige atomic<bool> lock-free.");
@@ -41,6 +47,7 @@ int main(int argument_count, char** argument_values) {
     signal(SIGINT, handleTerminationSignal);
     signal(SIGTERM, handleTerminationSignal);
 
+    CaptureEndReason capture_end_reason = CaptureEndReason::read_error;
     try {
         const EventRecordingConfig recording_config = parseEventRecordingArguments(argument_count, argument_values);
         // Valor negativo seleciona o aprendizado automatico do OpenCV.
@@ -155,6 +162,18 @@ int main(int argument_count, char** argument_values) {
         }
 
         video_reader.stopDecoding();
+        const PacketReadEnd packet_read_end = video_reader.getPacketReadEnd();
+        const bool interrupted_by_signal = !::capture_active;
+        std::error_code file_status_error;
+        const bool source_is_live = !std::filesystem::is_regular_file(recording_config.input_source, file_status_error);
+        capture_end_reason = classifyCaptureEnd(packet_read_end, source_is_live, interrupted_by_signal);
+        char error_detail[AV_ERROR_MAX_STRING_SIZE] = {};
+        if (packet_read_end.ffmpeg_error_code != 0) {
+            av_strerror(packet_read_end.ffmpeg_error_code, error_detail, sizeof(error_detail));
+        }
+        std::cout << "CAPTURE_END reason=" << getCaptureEndReasonName(capture_end_reason)
+                  << " av_error=" << packet_read_end.ffmpeg_error_code
+                  << " detail=\"" << error_detail << "\"" << std::endl;
         auto remaining_encoded_packets = video_reader.getEncodedPacketQueue().takeAllPackets();
         event_recorder.finishCapture(std::move(remaining_encoded_packets));
         std::cout << "CAPTURE_COMPLETE decoded_reads=" << video_reader.getDecodedFrameCount()
@@ -167,5 +186,5 @@ int main(int argument_count, char** argument_values) {
         return 2;
     }
 
-    return 0;
+    return getExitCodeForCaptureEnd(capture_end_reason);
 }
