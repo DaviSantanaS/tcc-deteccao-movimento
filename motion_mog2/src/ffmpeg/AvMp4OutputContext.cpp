@@ -2,6 +2,7 @@
 #include "ffmpeg/AvPacket.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <new>
 #include <stdexcept>
@@ -10,6 +11,7 @@
 
 extern "C" {
 #include <libavutil/avutil.h>
+#include <libavutil/opt.h>
 #include <libavutil/rational.h>
 }
 
@@ -38,6 +40,37 @@ AvMp4OutputContextPtr allocateMp4OutputContext() {
         throw std::bad_alloc{};
     }
     return output_context;
+}
+
+void configureMp4ForInterruptedWriting(
+    AVFormatContext& mp4_output_context,
+    std::int64_t fragment_duration_microseconds
+) {
+    if (!mp4_output_context.oformat || !mp4_output_context.oformat->name ||
+        std::strcmp(mp4_output_context.oformat->name, "mp4") != 0 ||
+        mp4_output_context.iformat != nullptr || mp4_output_context.pb != nullptr ||
+        !mp4_output_context.priv_data) {
+        throw std::invalid_argument("O contexto deve ser uma saida MP4 sem cabecalho escrito.");
+    }
+    if (fragment_duration_microseconds < 0) {
+        throw std::invalid_argument("A duracao do fragmento nao pode ser negativa.");
+    }
+
+    const int flags_status = av_opt_set(
+        mp4_output_context.priv_data, "movflags", "frag_keyframe+empty_moov+default_base_moof", 0
+    );
+    if (flags_status < 0) {
+        throw std::runtime_error("Nao foi possivel configurar movflags: erro " + std::to_string(flags_status));
+    }
+    if (fragment_duration_microseconds > 0) {
+        const int duration_status = av_opt_set_int(
+            mp4_output_context.priv_data, "frag_duration", fragment_duration_microseconds, 0
+        );
+        if (duration_status < 0) {
+            throw std::runtime_error("Nao foi possivel configurar frag_duration: erro " + std::to_string(duration_status));
+        }
+    }
+    mp4_output_context.flush_packets = 1;
 }
 
 AVStream& createMp4VideoStream(

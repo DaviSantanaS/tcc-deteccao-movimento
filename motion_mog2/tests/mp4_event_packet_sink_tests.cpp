@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <csignal>
@@ -22,6 +23,8 @@
 #include <vector>
 
 #include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -164,7 +167,7 @@ std::shared_ptr<const VideoStreamParameters> makeStreamParameters() {
     return std::make_shared<const VideoStreamParameters>(*codec_parameters, AVRational{1, 90000});
 }
 
-std::vector<AvPacketPtr> makePackets(int first_packet_index, int packet_count) {
+std::vector<AvPacketPtr> makePackets(int first_packet_index, int packet_count, int keyframe_interval = 60) {
     std::vector<AvPacketPtr> encoded_packets;
     for (int packet_index = first_packet_index; packet_index < first_packet_index + packet_count; ++packet_index) {
         const std::array<unsigned char, 6> payload{
@@ -179,7 +182,7 @@ std::vector<AvPacketPtr> makePackets(int first_packet_index, int packet_count) {
         packet->duration = 3000;
         packet->time_base = {1, 90000};
         packet->stream_index = 5;
-        packet->flags = packet_index == 0 ? AV_PKT_FLAG_KEY : 0;
+        packet->flags = packet_index % keyframe_interval == 0 ? AV_PKT_FLAG_KEY : 0;
         encoded_packets.push_back(std::move(packet));
     }
     return encoded_packets;
@@ -209,6 +212,68 @@ void verifyPackets(const std::filesystem::path& recording_path, const std::vecto
     }
     require(av_read_frame(input_context.get(), demuxed_packet.get()) == AVERROR_EOF,
             "O MP4 deve conter exatamente a quantidade de pacotes escrita.");
+}
+
+std::size_t countRecoveredPackets(const std::filesystem::path& recording_path) {
+    AVFormatContext* opened_input = nullptr;
+    const int input_status = avformat_open_input(&opened_input, recording_path.c_str(), nullptr, nullptr);
+    const std::unique_ptr<AVFormatContext, AvInputContextDeleter> input{opened_input};
+    require(input_status >= 0 && input && input->nb_streams == 1, "E05-T04: MP4 interrompido deve reabrir.");
+    input->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+    auto packet = allocateAvPacket();
+    std::size_t recovered_count = 0;
+    int read_status = 0;
+    while ((read_status = av_read_frame(input.get(), packet.get())) >= 0) {
+        if (recovered_count == 0) {
+            require((packet->flags & AV_PKT_FLAG_KEY) != 0, "E05-T04: primeiro pacote recuperado deve ser keyframe.");
+        }
+        ++recovered_count;
+        av_packet_unref(packet.get());
+    }
+    require(read_status == AVERROR_EOF, "E05-T04: demux deve terminar sem erro apos o ultimo fragmento completo.");
+    return recovered_count;
+}
+
+std::size_t measureKillRecovery(
+    const std::filesystem::path& recording_path,
+    const std::shared_ptr<const VideoStreamParameters>& video_stream_parameters,
+    int packet_count,
+    std::int64_t fragment_duration_microseconds
+) {
+    std::cout.flush();
+    std::cerr.flush();
+    const pid_t child_pid = fork();
+    require(child_pid >= 0, "E05-T04: fork falhou.");
+    if (child_pid == 0) {
+        try {
+            auto output_io_context = openOutputFile(recording_path);
+            auto mp4_output_context = allocateMp4OutputContext();
+            mp4_output_context->avoid_negative_ts = AVFMT_AVOID_NEG_TS_MAKE_ZERO;
+            configureMp4ForInterruptedWriting(*mp4_output_context, fragment_duration_microseconds);
+            (void)createMp4VideoStream(*mp4_output_context, *video_stream_parameters);
+            writeMp4Header(*mp4_output_context, output_io_context);
+            for (int packet_index = 0; packet_index < packet_count; ++packet_index) {
+                auto packets = makePackets(packet_index, 1, 600);
+                packets.front()->pts = static_cast<std::int64_t>(packet_index) * 1001;
+                packets.front()->dts = packets.front()->pts;
+                packets.front()->duration = 1001;
+                packets.front()->time_base = video_stream_parameters->packet_timestamp_time_base;
+                writeMp4Packets(*mp4_output_context, std::move(packets), video_stream_parameters);
+            }
+            std::raise(SIGKILL);
+            std::_Exit(2);
+        } catch (...) {
+            std::_Exit(3);
+        }
+    }
+    int child_status = 0;
+    pid_t waited_pid = -1;
+    do {
+        waited_pid = waitpid(child_pid, &child_status, 0);
+    } while (waited_pid < 0 && errno == EINTR);
+    require(waited_pid == child_pid && WIFSIGNALED(child_status) && WTERMSIG(child_status) == SIGKILL,
+            "E05-T04: filho deve escrever os pacotes e morrer por SIGKILL.");
+    return countRecoveredPackets(recording_path);
 }
 
 }  // namespace
@@ -462,6 +527,71 @@ int main() {
                     "E04-ADENDO: destrutor nao deve tentar outro trailer depois da falha explicita.");
         }
         std::cout << "PASS: E04-ADENDO falha do trailer fecha o sink antes de propagar, sem nova tentativa no destrutor.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            auto output_io_context = openOutputFile(directory.getDirectoryPath() / "header-written.mp4");
+            auto mp4_output_context = allocateMp4OutputContext();
+            (void)createMp4VideoStream(*mp4_output_context, *video_stream_parameters);
+            writeMp4Header(*mp4_output_context, output_io_context);
+            bool header_rejected = false;
+            try {
+                configureMp4ForInterruptedWriting(*mp4_output_context, 1'000'000);
+            } catch (const std::invalid_argument&) {
+                header_rejected = true;
+            }
+            require(header_rejected, "E05-T02: contexto com cabecalho ja escrito deve ser rejeitado.");
+            writeMp4Trailer(*mp4_output_context);
+        }
+        std::cout << "PASS: E05-T02 contexto com cabecalho escrito rejeitado.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            Mp4EventPacketSink sink(directory.getDirectoryPath(), video_stream_parameters);
+            sink.openRecording();
+            const std::filesystem::path recording_path = sink.getRecordingDescription();
+            sink.writePackets(makePackets(0, 120));
+            sink.finalizeRecording();
+            verifyPackets(recording_path, makePackets(0, 120));
+            AVFormatContext* opened_input = nullptr;
+            const int input_status = avformat_open_input(&opened_input, recording_path.c_str(), nullptr, nullptr);
+            const std::unique_ptr<AVFormatContext, AvInputContextDeleter> input{opened_input};
+            require(input_status >= 0 && input, "E05-T03: arquivo completo deve reabrir.");
+            input->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+            auto first_packet = allocateAvPacket();
+            require(av_read_frame(input.get(), first_packet.get()) >= 0 && (first_packet->flags & AV_PKT_FLAG_KEY) != 0,
+                    "E05-T03: arquivo completo deve iniciar em keyframe.");
+        }
+        std::cout << "PASS: E05-T03 MP4 completo preserva 120 pacotes, bytes, ordem e keyframe inicial.\n";
+
+        {
+            ScopedTemporaryDirectory directory;
+            const auto recovery_parameters = std::make_shared<const VideoStreamParameters>(
+                *video_stream_parameters->codec_parameters, AVRational{1, 60000}
+            );
+            for (const int packet_count : {900, 300}) {
+                for (const std::int64_t fragment_duration : {std::int64_t{0}, std::int64_t{1'000'000}}) {
+                    const auto path = directory.getDirectoryPath() /
+                        (std::to_string(packet_count) + "-" + std::to_string(fragment_duration) + ".mp4");
+                    const std::size_t recovered_count = measureKillRecovery(
+                        path, recovery_parameters, packet_count, fragment_duration
+                    );
+                    std::cout << "KILL_RECOVERY packets_written=" << packet_count
+                              << " fragment_duration_us=" << fragment_duration
+                              << " packets_recovered=" << recovered_count << '\n';
+                    require(recovered_count <= static_cast<std::size_t>(packet_count),
+                            "E05-T04: nao deve recuperar mais pacotes do que os escritos.");
+                    if (fragment_duration == 0) {
+                        require(recovered_count == static_cast<std::size_t>((packet_count / 600) * 600),
+                                "E05-T04: sem duracao maxima, recupera somente GOPs completos.");
+                    } else {
+                        require(recovered_count >= static_cast<std::size_t>(packet_count - 61),
+                                "E05-T04: duracao de 1s deve perder no maximo 61 pacotes.");
+                    }
+                }
+            }
+        }
+        std::cout << "PASS: E05-T04 quatro mortes por SIGKILL comparam recuperacao por GOP e por duracao.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

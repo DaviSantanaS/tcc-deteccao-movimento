@@ -8,6 +8,7 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -21,6 +22,11 @@ using AvMp4OutputContextPtr =
     std::unique_ptr<AVFormatContext, AvMp4OutputContextDeleter>;
 
 [[nodiscard]] AvMp4OutputContextPtr allocateMp4OutputContext();
+
+void configureMp4ForInterruptedWriting(
+    AVFormatContext& mp4_output_context,
+    std::int64_t fragment_duration_microseconds
+);
 
 [[nodiscard]] AVStream& createMp4VideoStream(
     AVFormatContext& mp4_output_context,

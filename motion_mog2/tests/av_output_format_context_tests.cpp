@@ -3,15 +3,19 @@
 #include "ffmpeg/VideoStreamParameters.hpp"
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <new>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 extern "C" {
 #include <libavcodec/defs.h>
 #include <libavutil/mem.h>
+#include <libavutil/opt.h>
 }
 
 int main() {
@@ -245,6 +249,57 @@ int main() {
         std::cout << "PASS: stream H.264 pertence ao contexto MP4, com codec_tag zerado e base de tempo inicial.\n";
         std::cout << "PASS: parametros e extradata independentes sobrevivem a origem; ausencia de extradata aceita.\n";
         std::cout << "PASS: entradas invalidas e segunda stream rejeitadas sem alterar as streams existentes.\n";
+
+        const auto get_option_string = [](void* object, const char* option_name) {
+            std::uint8_t* allocated_value = nullptr;
+            const int status = av_opt_get(object, option_name, 0, &allocated_value);
+            const std::unique_ptr<std::uint8_t, decltype(&av_free)> value{allocated_value, av_free};
+            if (status < 0 || !value) {
+                throw std::runtime_error("Nao foi possivel consultar a opcao do muxer.");
+            }
+            return std::string(reinterpret_cast<const char*>(value.get()));
+        };
+        auto fragmented_output_context = allocateMp4OutputContext();
+        configureMp4ForInterruptedWriting(*fragmented_output_context, 1'000'000);
+        const std::string configured_flags = get_option_string(fragmented_output_context->priv_data, "movflags");
+        std::int64_t flag_bits = 0;
+        if (configured_flags.empty() ||
+            av_opt_get_int(fragmented_output_context->priv_data, "movflags", 0, &flag_bits) < 0) {
+            throw std::runtime_error("E05-T01: movflags deve estar disponivel.");
+        }
+        for (const char* flag_name : {"frag_keyframe", "empty_moov", "default_base_moof"}) {
+            const AVOption* flag = av_opt_find(fragmented_output_context->priv_data, flag_name, "movflags", 0, 0);
+            if (!flag || flag->type != AV_OPT_TYPE_CONST || (flag_bits & flag->default_val.i64) != flag->default_val.i64) {
+                throw std::runtime_error("E05-T01: flag de fragmentacao ausente: " + std::string(flag_name));
+            }
+        }
+        if (get_option_string(fragmented_output_context->priv_data, "frag_duration") != "1000000" ||
+            fragmented_output_context->flush_packets != 1) {
+            throw std::runtime_error("E05-T01: duracao e descarga por pacote devem ser configuradas.");
+        }
+        auto keyframe_only_context = allocateMp4OutputContext();
+        configureMp4ForInterruptedWriting(*keyframe_only_context, 0);
+        if (get_option_string(keyframe_only_context->priv_data, "frag_duration") != "0" ||
+            keyframe_only_context->flush_packets != 1) {
+            throw std::runtime_error("E05-T01: duracao zero deve manter corte somente por keyframe.");
+        }
+        std::cout << "PASS: E05-T01 tres movflags presentes, duracao 1000000 ou zero e flush_packets=1.\n";
+
+        const auto require_invalid_configuration = [](AVFormatContext& context, std::int64_t duration) {
+            bool rejected = false;
+            try {
+                configureMp4ForInterruptedWriting(context, duration);
+            } catch (const std::invalid_argument&) {
+                rejected = true;
+            }
+            if (!rejected) {
+                throw std::runtime_error("E05-T02: contexto ou duracao invalidos devem ser rejeitados.");
+            }
+        };
+        require_invalid_configuration(*independent_output_context, -1);
+        require_invalid_configuration(*unconfigured_output_context, 1'000'000);
+        require_invalid_configuration(*other_format_context, 1'000'000);
+        std::cout << "PASS: E05-T02 duracao negativa e contextos sem formato MP4 rejeitados.\n";
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << "\n";
         return 1;

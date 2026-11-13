@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -89,6 +90,17 @@ void Mp4EventPacketSink::openRecording() {
     this->current_output_file_path_ = buildRecordingFilePath(this->output_directory_);
     this->mp4_output_context_ = allocateMp4OutputContext();
     this->mp4_output_context_->avoid_negative_ts = AVFMT_AVOID_NEG_TS_MAKE_ZERO;
+    // Fecha o fragmento quando chega um pacote com DTS a pelo menos 1 s do
+    // primeiro do fragmento, ou quando chega um keyframe. O primeiro fragmento
+    // comeca no primeiro pacote do arquivo (keyframe); os demais podem comecar
+    // em quadro comum. A duracao limita a perda na interrupcao a cerca de 1 s,
+    // independentemente do GOP. A descarga evita reter blocos de 256 KiB no I/O.
+    // FFmpeg n6.1: movenc.c:6068-6095; file.c:288-291; doc/muxers.texi, mov/mp4/ismv.
+    // https://github.com/FFmpeg/FFmpeg/blob/n6.1/libavformat/movenc.c#L6068-L6095
+    // https://github.com/FFmpeg/FFmpeg/blob/n6.1/libavformat/file.c#L288-L291
+    // https://github.com/FFmpeg/FFmpeg/blob/n6.1/doc/muxers.texi#L1490-L1539
+    constexpr std::int64_t mp4_fragment_duration_microseconds = 1'000'000;
+    configureMp4ForInterruptedWriting(*this->mp4_output_context_, mp4_fragment_duration_microseconds);
     (void)createMp4VideoStream(*this->mp4_output_context_, *this->video_stream_parameters_);
     this->output_io_context_ = openOutputFile(this->current_output_file_path_);
     writeMp4Header(*this->mp4_output_context_, this->output_io_context_);
