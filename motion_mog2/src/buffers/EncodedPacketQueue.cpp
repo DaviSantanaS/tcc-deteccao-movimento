@@ -57,7 +57,7 @@ std::size_t EncodedPacketQueue::discardCountedPacketsBeforeFirstKeyframe() {
     return this->discardLeadingNonKeyframes();
 }
 
-std::size_t EncodedPacketQueue::trimCountedPackets(
+TrimResult EncodedPacketQueue::trimCountedPackets(
     std::size_t minimum_kept_packet_count,
     std::size_t maximum_counted_packet_count
 ) {
@@ -72,12 +72,13 @@ std::size_t EncodedPacketQueue::trimCountedPackets(
 
     // Um MP4 so pode comecar em keyframe; por isso a frente da regiao
     // contabilizada e sempre um keyframe e o corte remove GOPs inteiros.
-    std::size_t discarded_packet_count = this->discardLeadingNonKeyframes();
+    TrimResult trim_result;
+    trim_result.discarded_packet_count = this->discardLeadingNonKeyframes();
     std::size_t next_keyframe_position = 0;
 
     while (this->findNextCountedKeyframe(1, next_keyframe_position) &&
            this->counted_packet_count_ - next_keyframe_position >= minimum_kept_packet_count) {
-        discarded_packet_count += this->discardFrontCountedPackets(next_keyframe_position);
+        trim_result.discarded_packet_count += this->discardFrontCountedPackets(next_keyframe_position);
     }
 
     // Acima do teto, o limite de memoria prevalece sobre o minimo de
@@ -85,13 +86,14 @@ std::size_t EncodedPacketQueue::trimCountedPackets(
     // sem keyframe para cortar, descarta toda a regiao contabilizada.
     while (this->counted_packet_count_ > maximum_counted_packet_count) {
         if (this->findNextCountedKeyframe(1, next_keyframe_position)) {
-            discarded_packet_count += this->discardFrontCountedPackets(next_keyframe_position);
+            trim_result.ceiling_discarded_packet_count += this->discardFrontCountedPackets(next_keyframe_position);
         } else {
-            discarded_packet_count += this->discardFrontCountedPackets(this->counted_packet_count_);
+            trim_result.ceiling_discarded_packet_count += this->discardFrontCountedPackets(this->counted_packet_count_);
         }
     }
 
-    return discarded_packet_count;
+    trim_result.discarded_packet_count += trim_result.ceiling_discarded_packet_count;
+    return trim_result;
 }
 
 std::vector<AvPacketPtr> EncodedPacketQueue::takeCountedPacketsFromLookback(

@@ -138,23 +138,26 @@ int main() {
             EncodedPacketQueue encoded_packet_queue;
             std::int64_t next_packet_id = pushPattern(encoded_packet_queue, makeGopPattern(4, 10), 0);
             encoded_packet_queue.advanceCountedPackets(10);
-            require(encoded_packet_queue.trimCountedPackets(6, 100) == 4, "Deve descartar exatamente um GOP.");
+            const TrimResult trim_result = encoded_packet_queue.trimCountedPackets(6, 100);
+            require(trim_result.discarded_packet_count == 4 && trim_result.ceiling_discarded_packet_count == 0,
+                    "E12-T01: corte normal deve descartar um GOP sem contabilizar descarte pelo teto.");
             require(encoded_packet_queue.getCountedPacketCount() == 6, "Devem restar 6 pacotes.");
 
             next_packet_id = pushPattern(encoded_packet_queue, "pp", next_packet_id);
             encoded_packet_queue.advanceCountedPackets(2);
-            require(encoded_packet_queue.trimCountedPackets(6, 100) == 0,
+            require(encoded_packet_queue.trimCountedPackets(6, 100).discarded_packet_count == 0,
                     "Cortar outro GOP deixaria menos que o minimo.");
             require(encoded_packet_queue.getCountedPacketCount() == 8, "Devem restar 8 pacotes.");
             requireIds(encoded_packet_queue.takeAllPackets(), 4, 8, "Trim deve manter os ids 4..11");
         }
         std::cout << "PASS: trim corta GOP inteiro sem ficar abaixo do minimo.\n";
+        std::cout << "PASS: E12-T01 corte normal descarta quatro pacotes e zero pelo teto.\n";
 
         {
             EncodedPacketQueue encoded_packet_queue;
             pushPattern(encoded_packet_queue, "KppKp", 0);
             encoded_packet_queue.advanceCountedPackets(3);
-            require(encoded_packet_queue.trimCountedPackets(0, 100) == 0,
+            require(encoded_packet_queue.trimCountedPackets(0, 100).discarded_packet_count == 0,
                     "Keyframe na regiao a frente nao pode ser usado para cortar.");
             require(encoded_packet_queue.getQueuedPacketCount() == 5 &&
                         encoded_packet_queue.getCountedPacketCount() == 3,
@@ -166,23 +169,27 @@ int main() {
             EncodedPacketQueue encoded_packet_queue;
             pushPattern(encoded_packet_queue, makeGopPattern(10, 20), 0);
             encoded_packet_queue.advanceCountedPackets(20);
-            require(encoded_packet_queue.trimCountedPackets(12, 15) == 10,
+            const TrimResult trim_result = encoded_packet_queue.trimCountedPackets(12, 15);
+            require(trim_result.discarded_packet_count == 10 && trim_result.ceiling_discarded_packet_count == 10,
                     "Acima do teto deve descartar um GOP mesmo abaixo do minimo.");
             require(encoded_packet_queue.getCountedPacketCount() == 10, "Devem restar 10 pacotes.");
         }
         std::cout << "PASS: teto descarta GOP mesmo abaixo do minimo.\n";
+        std::cout << "PASS: E12-T02 teto com keyframe descarta dez pacotes, todos pelo teto.\n";
 
         {
             EncodedPacketQueue encoded_packet_queue;
             pushPattern(encoded_packet_queue, "K" + std::string(20, 'p') + "Kpp", 0);
             encoded_packet_queue.advanceCountedPackets(21);
-            require(encoded_packet_queue.trimCountedPackets(5, 10) == 21,
+            const TrimResult trim_result = encoded_packet_queue.trimCountedPackets(5, 10);
+            require(trim_result.discarded_packet_count == 21 && trim_result.ceiling_discarded_packet_count == 21,
                     "Sem keyframe para cortar, o teto descarta toda a regiao contabilizada.");
             require(encoded_packet_queue.getCountedPacketCount() == 0 &&
                         encoded_packet_queue.getQueuedPacketCount() == 3,
                     "Os 3 pacotes a frente devem permanecer.");
         }
         std::cout << "PASS: teto sem keyframe esvazia so a regiao contabilizada.\n";
+        std::cout << "PASS: E12-T03 teto sem keyframe descarta 21 pacotes e preserva a regiao a frente.\n";
 
         {
             EncodedPacketQueue encoded_packet_queue;
@@ -324,7 +331,7 @@ int main() {
                     std::min<std::size_t>(uncounted_packet_count, 1 + iteration % 7)
                 );
                 if (iteration % 5 == 0) {
-                    discarded_packet_count += encoded_packet_queue.trimCountedPackets(60, 200);
+                    discarded_packet_count += encoded_packet_queue.trimCountedPackets(60, 200).discarded_packet_count;
                 }
                 if (iteration % 11 == 0) {
                     collect_packets(encoded_packet_queue.takeCountedPackets());

@@ -7,6 +7,11 @@
 #include <mutex>
 #include <vector>
 
+struct TrimResult {
+    std::size_t discarded_packet_count = 0;
+    std::size_t ceiling_discarded_packet_count = 0;
+};
+
 // Fila unica de pacotes codificados com uma fronteira:
 //
 //   frente                     fronteira              fim
@@ -35,7 +40,7 @@ public:
     std::size_t getUncountedPacketCount() const;
 
     std::size_t discardCountedPacketsBeforeFirstKeyframe();
-    std::size_t trimCountedPackets(
+    TrimResult trimCountedPackets(
         std::size_t minimum_kept_packet_count,
         std::size_t maximum_counted_packet_count
     );

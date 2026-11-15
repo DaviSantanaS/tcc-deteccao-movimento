@@ -188,6 +188,8 @@ std::vector<FakeRecording> simulateBaseline(std::size_t post_event_packet_count,
         );
     }
     scenario.finish();
+    require(scenario.event_log.str().find("IDLE_CEILING_DISCARDED") == std::string::npos,
+            "E12-T05: baseline sintetico nao deve registrar descarte pelo teto.");
     require(scenario.event_recorder.getCompletedRecordingCount() == scenario.packet_sink.getRecordings().size(),
             "Contagem de gravacoes concluidas incorreta.");
     return scenario.packet_sink.getRecordings();
@@ -204,6 +206,26 @@ int main() {
             requireRange(recordings[1], 780, 1180);
         }
         std::cout << "PASS: E03-T01 baseline com pos-evento 300 preserva [0,779] e [780,1180].\n";
+        std::cout << "PASS: E12-T05 baseline sintetico sem log de descarte pelo teto.\n";
+
+        {
+            Scenario scenario({158, 658, 0});
+            for (std::int64_t packet_id = 0; packet_id < 1450; ++packet_id) {
+                scenario.read(packet_id, packet_id % 750 == 0, packet_id == 1449);
+            }
+            const std::string expected_log =
+                "IDLE_CEILING_DISCARDED packets=659 ceiling_packets=658\n"
+                "IDLE_CEILING_DISCARDED packets=659 ceiling_packets=658\n"
+                "EVENT_STARTED frame=1449\n"
+                "EVENT_WAITING_KEYFRAME\n";
+            require(scenario.event_log.str() == expected_log,
+                    "E12-T04: exatamente dois descartes pelo teto devem preceder a espera por keyframe.");
+            require(scenario.event_recorder.getRecordingState() == RecordingState::waiting_keyframe &&
+                        scenario.packet_sink.getRecordings().empty(),
+                    "E12-T04: sem pre-evento, o recorder deve esperar keyframe sem abrir gravacao.");
+            std::cout << scenario.event_log.str();
+        }
+        std::cout << "PASS: E12-T04 dois descartes de 659 pacotes e espera por keyframe.\n";
 
         {
             const auto recordings = simulateBaseline(0);

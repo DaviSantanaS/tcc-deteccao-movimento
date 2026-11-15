@@ -55,7 +55,13 @@ void EventRecorder::processDecodedFrame(const MotionState& motion_state, std::ui
                     }
                 }
             } else {
-                (void)this->encoded_packet_queue_.trimCountedPackets(this->recorder_config_.lookback_packet_count, this->recorder_config_.maximum_idle_packet_count);
+                const TrimResult trim_result = this->encoded_packet_queue_.trimCountedPackets(
+                    this->recorder_config_.lookback_packet_count, this->recorder_config_.maximum_idle_packet_count
+                );
+                if (trim_result.ceiling_discarded_packet_count > 0) {
+                    this->event_log_ << "IDLE_CEILING_DISCARDED packets=" << trim_result.ceiling_discarded_packet_count
+                                     << " ceiling_packets=" << this->recorder_config_.maximum_idle_packet_count << std::endl;
+                }
             }
             break;
         }

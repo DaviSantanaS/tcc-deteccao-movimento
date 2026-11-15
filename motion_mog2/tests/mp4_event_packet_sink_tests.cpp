@@ -645,8 +645,8 @@ int main() {
             sink.writePackets(makeObservedPackets(false, false, 60, 2));
             sink.finalizeRecording();
             std::ostringstream expected_log;
-            expected_log << "CUT_POINT_WITHOUT_IDR path=" << path
-                         << " first_packet_pts=180000 first_packet_dts=180000\n";
+            expected_log << "CUT_POINT_WITHOUT_IDR path=\"" << path.string()
+                         << "\" first_packet_pts=180000 first_packet_dts=180000\n";
             require(output_capture.getOutput() == expected_log.str() && sink.getRecordingsStartedWithoutIdrCount() == 1,
                     "E11-T02: keyframe sem IDR deve gerar uma linha com caminho e carimbos originais.");
             verifyPackets(path, makeObservedPackets(false, false, 60, 2));

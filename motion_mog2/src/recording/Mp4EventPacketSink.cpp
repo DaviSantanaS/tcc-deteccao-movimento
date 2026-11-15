@@ -126,7 +126,7 @@ void Mp4EventPacketSink::writePackets(std::vector<AvPacketPtr>&& encoded_packets
         const AVPacket& first_packet = *encoded_packets.front();
         if (!checkIfH264PacketContainsNalUnitType(first_packet, *this->video_stream_parameters_->codec_parameters, 5)) {
             ++this->recordings_started_without_idr_count_;
-            std::cout << "CUT_POINT_WITHOUT_IDR path=" << this->current_output_file_path_
+            std::cout << "CUT_POINT_WITHOUT_IDR path=" << std::quoted(this->current_output_file_path_.string())
                       << " first_packet_pts=" << first_packet.pts
                       << " first_packet_dts=" << first_packet.dts << std::endl;
         }
