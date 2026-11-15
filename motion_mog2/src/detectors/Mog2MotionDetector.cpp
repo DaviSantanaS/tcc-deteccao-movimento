@@ -3,6 +3,7 @@
 #include <opencv2/cudaarithm.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -27,7 +28,8 @@ Mog2MotionDetector::Mog2MotionDetector(
         motion_end_frame_count,
         static_cast<std::uint64_t>(stream_fps * 1.0 + 0.5)
     ) {
-    if (motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
+    if (!std::isfinite(motion_threshold_percent) ||
+        motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
         throw std::runtime_error(
             "motion_threshold_percent deve estar no intervalo (0, 100]. Valor: " +
             std::to_string(motion_threshold_percent)

@@ -88,6 +88,44 @@ int main() {
         std::cout << "PASS: limiar nao numerico ou parcial usa a mensagem do projeto.\n";
 
         requireInvalidArguments(
+            {"motion_mog2", "video.mp4", "/tmp/x", "5", "nan"},
+            "motion_threshold_percent deve estar no intervalo (0, 100]. Valor: " +
+                std::to_string(std::numeric_limits<double>::quiet_NaN())
+        );
+        std::cout << "PASS: E13-T01 nan rejeitado.\n";
+
+        for (const std::string threshold_text : {"NaN", "inf", "-inf"}) {
+            requireInvalidArguments(
+                {"motion_mog2", "video.mp4", "/tmp/x", "5", threshold_text},
+                "motion_threshold_percent deve estar no intervalo (0, 100]. Valor: " +
+                    std::to_string(std::stod(threshold_text))
+            );
+        }
+        requireInvalidArguments(
+            {"motion_mog2", "video.mp4", "/tmp/x", "5", "1e999"},
+            "Limiar de movimento invalido: 1e999"
+        );
+        std::cout << "PASS: E13-T02 NaN, inf, -inf e 1e999 rejeitados.\n";
+
+        for (const std::string threshold_text : {"100", "0.0001"}) {
+            const EventRecordingConfig config = parseArguments(
+                {"motion_mog2", "video.mp4", "/tmp/x", "5", threshold_text}
+            );
+            require(config.motion_threshold_percent == std::stod(threshold_text),
+                    "Limiar valido nao foi preservado.");
+        }
+        std::cout << "PASS: E13-T03 limites validos 100 e 0.0001 aceitos.\n";
+
+        for (const std::string threshold_text : {"0", "100.0001", "-1"}) {
+            requireInvalidArguments(
+                {"motion_mog2", "video.mp4", "/tmp/x", "5", threshold_text},
+                "motion_threshold_percent deve estar no intervalo (0, 100]. Valor: " +
+                    std::to_string(std::stod(threshold_text))
+            );
+        }
+        std::cout << "PASS: E13-T04 limites invalidos 0, 100.0001 e -1 rejeitados.\n";
+
+        requireInvalidArguments(
             {"motion_mog2", "video.mp4", "/tmp/x", "5", "1.0", "0", "3"},
             "inicio_frames deve estar entre 1 e " + std::to_string(std::numeric_limits<int>::max()) + "."
         );

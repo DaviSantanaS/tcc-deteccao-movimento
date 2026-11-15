@@ -38,7 +38,8 @@ double parseMotionThreshold(const std::string& motion_threshold_text) {
     if (parsed_character_count != motion_threshold_text.size()) {
         throw std::invalid_argument("Limiar de movimento invalido: " + motion_threshold_text);
     }
-    if (motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
+    if (!std::isfinite(motion_threshold_percent) ||
+        motion_threshold_percent <= 0.0 || motion_threshold_percent > 100.0) {
         throw std::invalid_argument(
             "motion_threshold_percent deve estar no intervalo (0, 100]. Valor: " +
             std::to_string(motion_threshold_percent)
