@@ -107,6 +107,66 @@ A fonte também limita a região não contabilizada a `ceil(FPS * 40) + 32`
 pacotes por padrão; atingir esse teto encerra a leitura como `decoder_stalled`
 (código 6). Nenhum desses limites representa um teto global de memória em bytes.
 
+## Formato do MP4
+
+O gravador configura MP4 fragmentado com
+`movflags=frag_keyframe+empty_moov+default_base_moof`
+(`src/ffmpeg/AvMp4OutputContext.cpp:59-61`), `frag_duration=1000000`
+microssegundos (1 s) e `flush_packets=1`. A função recebe a duração e a aplica
+em `src/ffmpeg/AvMp4OutputContext.cpp:65-73`; o valor `1'000'000` é fornecido
+pelo sink em `src/recording/Mp4EventPacketSink.cpp:103-104`.
+
+O fechamento normal chama `av_write_trailer()`
+(`src/recording/Mp4EventPacketSink.cpp:139-151` e
+`src/ffmpeg/AvMp4OutputContext.cpp:304`). `kill -9` (SIGKILL) e queda de energia
+não executam esse fechamento nem o destrutor. Por isso a gravação usa
+fragmentos, que guardam pacotes e metadados juntos durante a escrita, e descarga
+de I/O por pacote. Isso não garante persistência em queda de energia.
+A descrição do formato está na [documentação do muxer MP4 do FFmpeg 6.1](https://github.com/FFmpeg/FFmpeg/blob/n6.1/doc/muxers.texi#L1490-L1539),
+e a descarga por pacote na [documentação de AVFormatContext::flush_packets](https://ffmpeg.org/doxygen/6.1/structAVFormatContext.html).
+
+Medição da E05, com GOP de 600 pacotes: SIGKILL após 900 pacotes recuperou 840
+com `frag_duration` de 1 s, contra 600 com fragmentação só por keyframe; após
+300 pacotes, ainda dentro do primeiro GOP, recuperou 240, contra 0 só por
+keyframe (`specs/plano_mudancas_v2.md:140-145`). Players verificados na E05,
+conforme informado na revisão documental: Totem 43.0, Chrome 153,
+ffplay 6.1.1 e GStreamer 1.24.2. Estas medições e verificações não foram
+repetidas nesta revisão.
+
+## Fim da captura e códigos de saída
+
+`CAPTURE_END` registra `reason`, `av_error` e `detail`
+(`src/main.cpp:170-176`). Os nomes vêm de `getCaptureEndReasonName()`
+(`src/app/CaptureEnd.cpp:40-56`); os códigos dos motivos vêm de
+`getExitCodeForCaptureEnd()` (`src/app/CaptureEnd.cpp:23-38`), chamado pelo
+retorno de `src/main.cpp:190`.
+
+| `CAPTURE_END reason` ou caminho antecipado | Código | Condição e referência |
+|---|---|---|
+| `file_end` | 0 | Fim de stream em arquivo regular (`src/app/CaptureEnd.cpp:8-9`, `:25-27`). |
+| `interrupted` | 0 | Sinal de encerramento ou leitura interrompida (`src/app/CaptureEnd.cpp:4-5`, `:10-11`, `:26-27`). |
+| `live_source_closed` | 3 | Fim de stream em fonte classificada como ao vivo (`src/app/CaptureEnd.cpp:8-9`, `:28-29`). |
+| `read_error` | 4 | Erro de leitura, motivo ainda `not_ended` ou fallback (`src/app/CaptureEnd.cpp:16-20`, `:30-31`, `:37`). |
+| `packet_error` | 5 | Erro na preparação do pacote (`src/app/CaptureEnd.cpp:12-13`, `:32-33`). |
+| `decoder_stalled` | 6 | Fonte encerrou por falta de contabilização pelo decoder (`src/app/CaptureEnd.cpp:14-15`, `:34-35`). |
+| Sem `reason` próprio: exceção com `[fatal]` | 2 | Exceção de CUDA/NVDEC ou da biblioteca padrão, incluindo argumentos inválidos no parser (`src/main.cpp:52`, `:182-187`). |
+| Sem `reason`: nenhuma GPU CUDA visível, com `[fatal]` | 1 | Retorno antecipado (`src/main.cpp:56-58`). |
+| Sem `reason`: excesso de argumentos | 1 | Mais de nove argumentos contando o executável; imprime uso (`src/main.cpp:39-44`). |
+| Sem `reason`: `--help` ou `-h` | 0 | Pedido de ajuda como único argumento; imprime uso (`src/main.cpp:37-44`). |
+
+SIGINT e SIGTERM usam o handler que coloca `capture_active` em falso
+(`src/main.cpp:32-34`, `:47-48`). Na classificação, esse sinal prevalece sobre
+o motivo da fonte: `interrupted_by_signal = !::capture_active`
+(`src/main.cpp:166`) é consultado antes do switch
+(`src/app/CaptureEnd.cpp:4-6`). Isso não substitui os retornos antecipados nem
+o código 2 de uma exceção, inclusive se ela ocorrer na finalização depois de
+`CAPTURE_END` (`src/main.cpp:174-190`).
+
+O critério de origem é `std::filesystem::is_regular_file(input_source,
+file_status_error)`: arquivo regular é tratado como arquivo; o resultado
+negado classifica a fonte como ao vivo, incluindo quando a consulta falha.
+Não é uma distinção feita apenas pelo prefixo RTSP (`src/main.cpp:167-169`).
+
 ## Logs atuais
 
 A aproximadamente 59,94 FPS, com pré-evento e pós-evento de cinco segundos e
@@ -124,6 +184,33 @@ POST_EVENT seconds=5 packets=300
 pacotes escritos, enquanto `decoded_reads` conta leituras durante a gravação.
 `CAPTURE_END` informa o motivo do encerramento; `CAPTURE_COMPLETE` inclui o
 contador `recordings_without_idr` da observabilidade de E11.
+
+### Logs acrescentados pelo plano v2
+
+- `MP4_SAVED_AFTER_ERROR path=... encoded_packets=N`: quando uma exceção
+  interrompe a gravação, o destrutor do sink tenta finalizar o MP4 ainda
+  aberto e com cabeçalho escrito. Esta linha indica que a finalização dos
+  pacotes já escritos terminou sem exceção
+  (`src/recording/Mp4EventPacketSink.cpp:56-68`).
+- `MP4_DISCARDED_EMPTY path=...`: nesse mesmo caminho do destrutor, uma
+  gravação com zero pacotes escritos tem os contextos liberados e o arquivo
+  vazio removido (`src/recording/Mp4EventPacketSink.cpp:61-64`).
+- `EVENT_INVALID_TIMESTAMP reason=... frame=... dropped_packets=N resumed=yes|no`:
+  informa o primeiro problema do lote, o índice do frame decodificado em
+  processamento, quantos pacotes foram descartados nesse lote e se a gravação
+  ficou aberta após o tratamento (`src/recording/EventRecorder.cpp:253-267`).
+  Os motivos são `missing_timestamp` (PTS ou DTS ausente), `pts_before_dts`
+  (PTS menor que DTS) e `non_increasing_dts` (DTS menor ou igual ao último DTS
+  escrito), conforme `src/recording/PacketTimestampCheck.cpp:14-21`.
+- `CUT_POINT_WITHOUT_IDR path=... first_packet_pts=... first_packet_dts=...`:
+  registra que o primeiro pacote do MP4, aceito pela flag KEY, não contém NAL
+  tipo 5 (IDR); incrementa o contador `recordings_without_idr` mostrado em
+  `CAPTURE_COMPLETE`, sem impor uma regra rígida de corte por IDR
+  (`src/recording/Mp4EventPacketSink.cpp:120-131`, `src/main.cpp:179-181`).
+- `IDLE_CEILING_DISCARDED packets=N ceiling_packets=T`: registra somente
+  quando houve descarte pelo teto durante idle; `packets` é a parcela
+  descartada pelo teto e `ceiling_packets` é o teto configurado
+  (`src/recording/EventRecorder.cpp:58-63`).
 
 ## Testes da conversão sem CUDA
 
