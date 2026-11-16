@@ -1,133 +1,151 @@
-# Pre-evento configuravel
+# Pré-evento configurável e gravação por evento
 
-O usuario informa segundos; o `main` calcula `ceil(segundos * FPS)` e passa a
-quantidade de frames para `EncodedVideoBuffer`. O detector MOG2 continua
-responsavel por identificar o movimento.
+O `main` converte segundos em contagens com `ceil(segundos * FPS)`, usando
+`calculatePreEventFrameCount` de `src/config/PreEventConfig.cpp`. No caminho de
+retenção, essa contagem é usada em pacotes codificados de vídeo. O MOG2 analisa
+os frames decodificados na GPU; os MP4 são escritos por remux dos pacotes
+originais preservados por `FfmpegEncodedVideoSource`, sem transcoding.
 
-## Inicializador
+## Execução
 
-Na raiz do repositorio:
+Na raiz do repositório, depois do build:
 
-```bash
-bash run_mog2_test.sh "$HOME/Vídeos/tcc" 5
+```text
+motion_mog2/build/motion_mog2 [fonte] [diretorio_saida] [pre_evento_s] [limiar_%] [inicio_frames] [fim_frames] [pos_evento_s] [rtsp_transporte]
 ```
 
-O segundo argumento e o tempo de pre-evento em segundos. O valor padrao e zero.
-Use ponto para valores fracionarios, por exemplo `2.5`.
+Padrões: `rtsp://127.0.0.1:8554/video ./recordings 5 1.0 2 3 5 tcp`.
+O transporte aceita `tcp`, `udp` ou `auto` e é ignorado para arquivo local.
+Os tempos devem ser finitos e não negativos; use ponto para frações, como `2.5`.
+O limiar deve ser finito e pertencer a `(0, 100]`; os contadores de início e fim
+são inteiros positivos.
 
-O primeiro argumento aceita um arquivo ou uma pasta. O padrao e `~/Vídeos/tcc`
-(no computador do Davi: `/home/davi/Vídeos/tcc`). Com um unico video na pasta,
-o script o seleciona automaticamente. Com varios, apresenta uma lista numerada
-para escolher. Se a entrada terminar sem uma escolha, o script encerra com erro.
-Uma pasta vazia ou sem formatos reconhecidos tambem produz um erro explicito.
-Os formatos listados sao MP4, MKV, AVI, MOV, M4V, TS e WebM, incluindo extensoes
-em maiusculas. A busca considera os arquivos diretamente dentro da pasta.
-
-Para escolher um arquivo especifico, sem apresentar a lista:
+Exemplo com arquivo local e pós-evento de cinco segundos:
 
 ```bash
-bash run_mog2_test.sh "$HOME/Vídeos/tcc/meu video.mp4" 5
+motion_mog2/build/motion_mog2 "$HOME/Vídeos/tcc/video_h264_fhd_60fps.mp4" /tmp/tcc_eventos 5 1.0 2 3 5
 ```
 
-`VIDEO_DIR` permite trocar a pasta padrao. O primeiro argumento vazio usa essa
-pasta e permite informar os segundos no segundo argumento:
+O inicializador RTSP para arquivo ou webcam é:
 
 ```bash
-VIDEO_DIR=/outra/pasta bash run_mog2_test.sh "" 5
+RTSP_TRANSPORT=tcp SHOW_PREVIEW=0 bash run_rtsp_recording.sh "$HOME/Vídeos/tcc/video_h264_fhd_60fps.mp4" /tmp/tcc_eventos 5
 ```
 
-Todos os argumentos do inicializador:
+Ele preserva os logs em uma pasta `.rtsp-run.*` dentro do diretório de saída,
+incluindo `recording.log`. Ctrl+C encerra os processos iniciados pelo script.
+
+O inicializador `run_mog2_test.sh` também permanece disponível:
 
 ```text
 bash run_mog2_test.sh [video-ou-pasta] [pre_event_seconds] [motion_threshold_percent] [motion_start_frames] [motion_end_frames]
 ```
 
-Exemplo com todos os valores explicitos:
+Nesse script, o pré-evento padrão é zero. O primeiro argumento aceita arquivo
+ou pasta, com seleção interativa quando há vários vídeos. `VIDEO_DIR` altera a
+pasta padrão (`~/Vídeos/tcc`); `OPENCV_DIR` e `MEDIAMTX_BIN` alteram os caminhos
+de instalação. A chamada ao executável inclui fonte, diretório
+`.run_mog2/recordings`, pré-evento, limiar e contadores, nessa ordem. Pós-evento
+e transporte usam os padrões do executável. O log é `.run_mog2/motion_mog2.log`,
+sobrescrito em cada execução.
 
-```bash
-bash run_mog2_test.sh "$HOME/Vídeos/tcc" 5 1.0 2 3
-```
+## Fila única e fronteira
 
-O script encaminha os argumentos ao executavel nesta ordem:
+`EncodedPacketQueue` pertence à fonte FFmpeg e mantém uma `std::deque<AvPacketPtr>`
+protegida por mutex. `pushPacket()` insere no final sem avançar a fronteira
+`counted_packet_count_`. A região anterior à fronteira contém os pacotes já
+contabilizados; a região posterior contém os pacotes lidos antecipadamente.
+
+`VideoStreamReader` configura `allowFrameDrop = false`, `rawMode = true` e
+`udpSource = true`. A cada `read()` bem-sucedido, recupera um frame na GPU e
+consulta `PROP_NUMBER_OF_RAW_PACKAGES_SINCE_LAST_GRAB` para chamar
+`advanceCountedPackets(N)`. Esse N pode ser diferente de um: o índice do frame
+decodificado não substitui a fronteira dos pacotes.
+
+Retiradas e descartes normais atuam somente na região contabilizada. No
+encerramento, o `main` chama `stopDecoding()` antes de `takeAllPackets()`; esse
+último método também retira os pacotes ainda não contabilizados. A escrita dos
+lotes ocorre fora do lock da fila, por `EventRecorder` e `Mp4EventPacketSink`.
+
+## Janela de retenção e limites
+
+O `main` calcula:
 
 ```text
-motion_mog2 RTSP_URL motion_threshold_percent motion_start_frames motion_end_frames pre_event_seconds
+pre_event_packet_count = ceil(pre_evento_s * FPS)
+start_margin_packet_count = 32 + inicio_frames - 1
+lookback_packet_count = pre_event_packet_count + start_margin_packet_count
+maximum_idle_packet_count = lookback_packet_count + ceil(20 * FPS)
+post_event_packet_count = ceil(pos_evento_s * FPS)
 ```
 
-Os caminhos de instalacao existentes podem ser sobrescritos:
+A margem é a escolhida no código para cobrir o avanço do decoder e os frames
+usados para confirmar o início. Os 20 segundos são uma suposição sobre o GOP,
+pendente de ajuste para a câmera real.
 
-```bash
-OPENCV_DIR=/caminho/opencv/lib/cmake/opencv4 \
-MEDIAMTX_BIN=/caminho/mediamtx \
-bash run_mog2_test.sh /caminho/video.mp4 5
-```
+Sem início de movimento, `EventRecorder` apara a região contabilizada por GOPs,
+preservando pelo menos o `lookback` quando possível. O teto prevalece sobre esse
+mínimo: pode descartar um GOP e, sem outro keyframe, esvazia a região
+contabilizada. Esse descarte gera `IDLE_CEILING_DISCARDED`.
 
-O inicializador mostra a saida do detector no terminal e a salva em
-`.run_mog2/motion_mog2.log`. Esse arquivo e sobrescrito em cada execucao.
-Ctrl+C encerra a execucao e limpa os processos iniciados pelo script.
+Ao iniciar o evento, `takeCountedPacketsFromLookback()` busca o último keyframe
+até `max(counted_packet_count - lookback, 0)`. Sem um keyframe nessa faixa,
+aceita o primeiro posterior disponível na região contabilizada, com histórico
+menor. Sem nenhum keyframe, descarta essa região e o recorder passa a
+`waiting_keyframe`. Se o movimento terminar durante a espera, descarta o evento.
+Mesmo com pré-evento zero, a margem e o alinhamento ao keyframe permanecem.
 
-## O que conferir nos logs
+Durante o evento, os lotes contabilizados seguem para o MP4. Após o fim do
+movimento, o recorder conta os pacotes escritos de pós-evento; a contagem pode
+chegar a zero no meio de um lote, que é escrito inteiro. Depois fecha antes do
+próximo keyframe, deixando esse keyframe na fila. Um novo início durante o
+pós-evento ou a espera de fechamento retoma o evento no mesmo arquivo.
 
-A 59.94 FPS, cinco segundos sao convertidos para 300 frames:
+A contagem não é um teto de bytes nem uma garantia de duração exata: histórico
+inicial insuficiente, descarte pelo teto e alinhamento ao GOP afetam o trecho.
+A fonte também limita a região não contabilizada a `ceil(FPS * 40) + 32`
+pacotes por padrão; atingir esse teto encerra a leitura como `decoder_stalled`
+(código 6). Nenhum desses limites representa um teto global de memória em bytes.
+
+## Logs atuais
+
+A aproximadamente 59,94 FPS, com pré-evento e pós-evento de cinco segundos e
+`inicio_frames=2`:
 
 ```text
-PRE_EVENT seconds=5 frames=300 reference=decoded_frame_index
+PRE_EVENT seconds=5 packets=300 margin_packets=33 idle_cap_packets=1532
+POST_EVENT seconds=5 packets=300
 ```
 
-Em `MOTION_BUFFER_START`:
+`MOTION_STARTED` e `MOTION_ENDED` registram os índices analisados pelo detector.
+`PRE_EVENT_WRITTEN packets=N` conta o lote inicial efetivamente escrito.
+`EVENT_WAITING_KEYFRAME` e `EVENT_DISCARDED_NO_KEYFRAME` indicam espera e descarte.
+`MP4_STARTED` e `MP4_SAVED` registram os arquivos; `encoded_packets` conta os
+pacotes escritos, enquanto `decoded_reads` conta leituras durante a gravação.
+`CAPTURE_END` informa o motivo do encerramento; `CAPTURE_COMPLETE` inclui o
+contador `recordings_without_idr` da observabilidade de E11.
 
-- `requested_pre_event_frames`: quantidade solicitada apos a conversao.
-- `extra_frames_before_motion`: diferenca entre os indices observados de inicio
-  do evento e do inicio selecionado para o buffer.
-- `starts_with_key_frame`: indica se o primeiro pacote esta marcado com keyframe.
-- `pre_event_history_sufficient`: 1 quando ha inicio por keyframe e a diferenca
-  de indices cobre a quantidade solicitada; 0 quando esse historico nao existe.
+## Testes da conversão sem CUDA
 
-Os primeiros eventos podem informar historico insuficiente enquanto o leitor
-ainda esta acumulando dados. Os pacotes disponiveis continuam sendo usados.
-
-## Politica de retencao
-
-O buffer conserva GOPs anteriores e o GOP corrente. O inicio desejado e o indice
-de `MOTION_ON` menos a quantidade configurada, limitado a zero. Selecionamos o
-ultimo keyframe observado ate esse limite e conservamos os GOPs posteriores.
-O GOP corrente ja inclui os pacotes do ciclo de `MOTION_ON`, evitando duplica-los.
-
-Com zero segundos, permanece o comportamento anterior: comecar no GOP corrente.
-Na ausencia de qualquer keyframe, permanece o fallback dos pacotes do ciclo,
-com `starts_with_key_frame=0` e `pre_event_history_sufficient=0`.
-
-Os indices registram ciclos de processamento, nao timestamps de midia nem uma
-correspondencia exata entre pacote e frame. Portanto, a duracao e aproximada e
-pode incluir uma margem anterior por causa do alinhamento ao keyframe.
-`duration_seconds` continua medindo diferenca entre horarios locais de observacao.
-
-A janela em frames nao e um teto de bytes: a memoria depende do bitrate e do
-intervalo entre keyframes. Sem novos keyframes, o GOP corrente pode continuar
-crescendo; o buffer de um evento ativo tambem cresce ate o fim do evento.
-
-Esta etapa conserva os dados em memoria e registra estatisticas. A gravacao MP4
-depende da implementacao futura do remuxer.
-
-## Testes da logica sem CUDA
-
-Os pacotes codificados ficam em `EncodedPacket.hpp`, sem dependencia de OpenCV.
-Isso permite testar o buffer e a conversao usando somente um compilador C++17:
+`pre_event_tests` usa apenas `tests/pre_event_tests.cpp` e
+`src/config/PreEventConfig.cpp`. O alvo é registrado no CTest quando
+`BUILD_TESTING=ON`:
 
 ```bash
-g++ -std=c++17 -Wall -Wextra -Werror -pedantic \
-  -I motion_mog2/include \
-  motion_mog2/tests/pre_event_tests.cpp \
-  motion_mog2/src/EncodedVideoBuffer.cpp \
-  motion_mog2/src/PreEventConfig.cpp \
-  -o /tmp/tcc-pre-event-tests
-/tmp/tcc-pre-event-tests
+ctest --test-dir motion_mog2/build -R '^pre_event_tests$' --output-on-failure
 ```
 
-Os dez grupos cobrem conversao, entradas invalidas, zero segundos, varios GOPs,
-limites exatos, historico insuficiente, keyframe ausente/tardio, lotes vazios,
-varios keyframes no mesmo lote e continuidade entre eventos. Os pacotes dos
-testes sao sinteticos; os testes nao comprovam a decodificacao do video.
+O teste cobre conversão, arredondamento, valores fracionários, entradas
+inválidas e estouro de contagem. A retenção e a máquina de estados são testadas
+separadamente por `encoded_packet_queue_tests` e `event_recorder_tests`.
+Esses testes sintéticos não comprovam a decodificação nem o funcionamento RTSP.
 
-Com o projeto configurado pelo CMake e `BUILD_TESTING` habilitado, o mesmo
-executavel tambem e registrado no CTest como `pre_event_tests`.
+## Decisões e limitações da execução do plano v2
+
+As medições abaixo foram registradas nas etapas anteriores e fornecidas para o alinhamento documental; esta etapa não as repete.
+
+- E06: carimbo inválido durante o movimento perde até um GOP; se o movimento terminar antes do próximo keyframe, o pós-evento também se perde (`src/recording/EventRecorder.cpp`, transição para `waiting_keyframe`).
+- E07: queda abrupta da fonte pode deixar o último quadro do MP4 incompleto (medido: 2 de 3 quedas; sem o último pacote, os arquivos ficam sãos).
+- E08 adiada: item 2.5 não reproduzível com o MediaMTX local (SPS chega embutido: MED-1 PUB-NOSPS=5, webcam real=3); relevante só para câmera ligada direto que envie SPS/PPS apenas no SDP; E09 cobre a consequência (`decoder_stalled`, código 6).
+- E10: medido em G1, PUB-COPY e webcam real: `key_without_idr=0` em todas; corte pela flag KEY mantido. O utilitário `H264NalUnits` foi antecipado da E08.
+- E11: só observabilidade (`CUT_POINT_WITHOUT_IDR` e contador); regra rígida de IDR pendente de câmera real.

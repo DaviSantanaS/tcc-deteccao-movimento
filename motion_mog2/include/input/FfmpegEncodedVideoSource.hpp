@@ -3,7 +3,6 @@
 #include "buffers/EncodedPacketQueue.hpp"
 #include "ffmpeg/AvBitstreamFilter.hpp"
 #include "ffmpeg/AvPacket.hpp"
-#include "ffmpeg/EncodedVideoPackets.hpp"
 #include "ffmpeg/VideoStreamParameters.hpp"
 #include "input/PacketReadEnd.hpp"
 
@@ -17,7 +16,6 @@ extern "C" {
 #include <cstddef>
 #include <memory>
 #include <string>
-#include <vector>
 
 class FfmpegEncodedVideoSource : public cv::cudacodec::RawVideoSource {
 public:
@@ -38,12 +36,6 @@ public:
     bool lastPacketContainsKeyFrame() const override;
     bool get(int property_id, double& property_value) const override;
     int getFirstFrameIdx() const override;
-
-    [[nodiscard]]
-    std::vector<AvPacketPtr> dequeueEncodedPackets(std::size_t packet_count);
-
-    [[nodiscard]]
-    EncodedVideoPackets dequeueEncodedPacketsWithStreamParameters(std::size_t packet_count);
 
     std::shared_ptr<const VideoStreamParameters> getVideoStreamParameters() const;
     EncodedPacketQueue& getEncodedPacketQueue();

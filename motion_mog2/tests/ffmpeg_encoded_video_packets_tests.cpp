@@ -1,4 +1,5 @@
 #include "ffmpeg/AvBitstreamFilter.hpp"
+#include "ffmpeg/EncodedVideoPackets.hpp"
 #include "EncodedBytesDiagnostics.hpp"
 #include "input/FfmpegEncodedVideoSource.hpp"
 
@@ -221,7 +222,11 @@ int main(int argument_count, char** argument_values) {
                 throw std::runtime_error("A entrega Annex B nao deve alterar a extradata publica ou preservada.");
             }
 
-            const auto empty_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(0);
+            video_source.getEncodedPacketQueue().advanceCountedPackets(0);
+            const EncodedVideoPackets empty_packet_batch{
+                video_source.getEncodedPacketQueue().takeCountedPackets(),
+                video_source.getVideoStreamParameters()
+            };
             if (!empty_packet_batch.encoded_packets.empty() ||
                 empty_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get()) {
                 throw std::runtime_error("Retirar zero pacotes deve retornar uma colecao vazia com configuracao.");
@@ -229,7 +234,8 @@ int main(int argument_count, char** argument_values) {
 
             bool rejected_excessive_packet_count = false;
             try {
-                video_source.dequeueEncodedPacketsWithStreamParameters(4);
+                video_source.getEncodedPacketQueue().advanceCountedPackets(4);
+                (void)video_source.getEncodedPacketQueue().takeCountedPackets();
             } catch (const std::runtime_error&) {
                 rejected_excessive_packet_count = true;
             }
@@ -237,8 +243,16 @@ int main(int argument_count, char** argument_values) {
                 throw std::runtime_error("A retirada deve rejeitar uma quantidade maior que a fila.");
             }
 
-            first_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(2);
-            remaining_packet_batch = video_source.dequeueEncodedPacketsWithStreamParameters(1);
+            video_source.getEncodedPacketQueue().advanceCountedPackets(2);
+            first_packet_batch = {
+                video_source.getEncodedPacketQueue().takeCountedPackets(),
+                video_source.getVideoStreamParameters()
+            };
+            video_source.getEncodedPacketQueue().advanceCountedPackets(1);
+            remaining_packet_batch = {
+                video_source.getEncodedPacketQueue().takeCountedPackets(),
+                video_source.getVideoStreamParameters()
+            };
             if (first_packet_batch.encoded_packets.size() != 2 ||
                 remaining_packet_batch.encoded_packets.size() != 1 ||
                 first_packet_batch.video_stream_parameters.get() != expected_video_stream_parameters.get() ||
@@ -345,7 +359,8 @@ int main(int argument_count, char** argument_values) {
 
             bool rejected_empty_queue = false;
             try {
-                video_source.dequeueEncodedPacketsWithStreamParameters(1);
+                video_source.getEncodedPacketQueue().advanceCountedPackets(1);
+                (void)video_source.getEncodedPacketQueue().takeCountedPackets();
             } catch (const std::runtime_error&) {
                 rejected_empty_queue = true;
             }

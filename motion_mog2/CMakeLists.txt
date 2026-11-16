@@ -250,6 +250,19 @@ if(BUILD_TESTING)
     add_test(NAME event_recording_config_tests COMMAND event_recording_config_tests)
 
     add_executable(
+            pre_event_tests
+            tests/pre_event_tests.cpp
+            src/config/PreEventConfig.cpp
+    )
+
+    target_include_directories(
+            pre_event_tests
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_test(NAME pre_event_tests COMMAND pre_event_tests)
+
+    add_executable(
             av_packet_tests
             tests/av_packet_tests.cpp
             src/ffmpeg/AvPacket.cpp

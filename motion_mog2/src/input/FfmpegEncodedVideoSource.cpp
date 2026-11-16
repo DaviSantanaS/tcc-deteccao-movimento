@@ -357,21 +357,3 @@ bool FfmpegEncodedVideoSource::getNextPacket(
         }
     }
 }
-
-std::vector<AvPacketPtr> FfmpegEncodedVideoSource::dequeueEncodedPackets(
-    std::size_t packet_count
-) {
-    // A regiao contabilizada esta vazia na entrada, pois todo chamador
-    // retira todos os pacotes que avanca antes de chamar novamente.
-    this->encoded_packet_queue_.advanceCountedPackets(packet_count);
-    return this->encoded_packet_queue_.takeCountedPackets();
-}
-
-EncodedVideoPackets FfmpegEncodedVideoSource::dequeueEncodedPacketsWithStreamParameters(
-    std::size_t packet_count
-) {
-    return {
-        this->dequeueEncodedPackets(packet_count),
-        this->video_stream_parameters_
-    };
-}

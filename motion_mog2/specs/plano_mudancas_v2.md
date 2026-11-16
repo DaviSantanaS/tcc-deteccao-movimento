@@ -1523,6 +1523,7 @@ PUSH: origin feat/fila-unica
 
 | Pendência | Situação |
 |---|---|
+| E08 — SPS/PPS só no SDP (item 2.5): adiada | Não reproduzível com o MediaMTX local: SPS chega embutido no fluxo (MED-1: PUB-NOSPS=5; webcam real=3). Relevante para câmera ligada diretamente que envie SPS/PPS apenas no SDP. E09 cobre a consequência com `decoder_stalled` e código 6; retomar E08 quando essa fonte estiver disponível. |
 | 2.7 Timeout de I/O | Declarado fora de escopo em `specs/00-LEIA-ME.md:32`. Com MediaMTX o travamento vira fim de stream em cerca de 10 s (medido); com câmera real não há limite. Depois de E07, a expiração pode reutilizar o motivo `read_error`. |
 | 2.9 TEARDOWN após Ctrl+C | Medido: em UDP a sessão fica no servidor até expirar; em TCP cai com a conexão. Sem efeito no padrão `tcp`. |
 | Thread de escrita separada | Pendência conhecida. E05 aumenta o número de chamadas de escrita na thread do `read()`; se houver atraso medido, esta pendência sobe de prioridade. |
